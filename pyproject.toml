@@ -1,0 +1,45 @@
+[project]
+name = "ai-interview-platform"                 # distribution name for this monorepo's python packages
+version = "0.1.0"                              # starting semantic version, bump per release later
+description = "AI Interview Intelligence Platform: FastAPI backend, ARQ workers, and ml/ package"  # short summary shown by packaging tools
+readme = "README.md"                           # long description pulled from README when building a package
+requires-python = ">=3.11,<3.12"                # pin to the 3.11.x line to match pyenv 3.11.9 exactly
+dependencies = [
+    "fastapi>=0.115,<0.116",                    # the web framework serving all HTTP routers
+    "uvicorn[standard]>=0.32,<0.33",            # ASGI server used to run the FastAPI app, with uvloop/httptools extras
+    "sqlalchemy[asyncio]>=2.0,<2.1",            # ORM + core, async engine used against Postgres
+    "asyncpg>=0.29,<0.30",                      # async postgres driver used by SQLAlchemy's asyncpg dialect
+    "alembic>=1.13,<1.14",                      # schema migration tool, tracks db state as versioned python scripts
+    "pydantic>=2.9,<3",                         # data validation/settings models used throughout schemas and config
+    "pydantic-settings>=2.5,<3",                # loads typed settings objects from environment variables / .env
+    "python-dotenv>=1.0,<2",                    # loads .env into process environment for local development
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.7,<0.8",                           # fast linter + formatter, run in CI to enforce style/quality
+    "pytest>=8.3,<9",                           # test runner for backend unit/integration tests
+    "pytest-asyncio>=0.24,<0.25",               # allows pytest to run `async def` test functions
+    "httpx>=0.27,<0.28",                        # async HTTP client used by FastAPI's TestClient-style integration tests
+]
+
+[tool.ruff]
+line-length = 120                               # generous limit to allow explanatory inline comments per project convention
+target-version = "py311"                        # tells ruff which python version's syntax to assume when linting
+src = ["backend", "ml"]                         # source roots ruff treats as first-party for import sorting
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]             # pycodestyle errors, pyflakes, isort, pyupgrade, and bugbear rule sets
+ignore = []                                     # no rules suppressed globally yet
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"                           # lets pytest-asyncio run async tests without per-test decorators
+testpaths = ["backend/tests"]                   # directory pytest searches for test modules
+pythonpath = [".", "backend"]                   # ensures `import app...` and `import ml...` resolve from repo root
+
+[build-system]
+requires = ["hatchling"]                        # build backend needed to make this a valid installable package
+build-backend = "hatchling.build"               # entry point hatchling uses to build sdists/wheels
+
+[tool.hatch.build.targets.wheel]
+packages = ["backend/app", "ml"]                # the two importable packages this project ships: `app` and `ml`

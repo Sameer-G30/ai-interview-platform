@@ -1,0 +1,38 @@
+# docker-compose.yml — local dev infrastructure only (Postgres+pgvector, Redis).
+# The FastAPI app and ARQ workers run on the host via `uv run`, not as containers here,
+# so hot-reload stays fast; a deployment profile is added in the hardening phase.
+
+services:
+  # Postgres with the pgvector extension pre-installed, used for relational data + embeddings.
+  db:
+    image: pgvector/pgvector:pg16   # official pgvector image bundled with Postgres 16
+    restart: unless-stopped         # auto-restart the container on crash or docker daemon restart, but not after a manual stop
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aiip_user}          # falls back to aiip_user if unset in the shell/.env
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_locally}  # falls back to a dev-only default password
+      POSTGRES_DB: ${POSTGRES_DB:-aiip_db}                # database created automatically on first container start
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"   # expose postgres to the host so `uv run` processes can connect via localhost
+    volumes:
+      - pgdata:/var/lib/postgresql/data   # named volume so data survives container recreation
+      - ./backend/docker/init-pgvector.sql:/docker-entrypoint-initdb.d/init-pgvector.sql:ro  # enables the extension on first init
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aiip_user} -d ${POSTGRES_DB:-aiip_db}"]  # reports ready once postgres accepts connections
+      interval: 5s        # how often to run the healthcheck
+      timeout: 5s          # how long a single check attempt may take
+      retries: 10          # how many consecutive failures before marking the container unhealthy
+
+  # Redis, used as the ARQ job queue broker (wired up in the queue-infrastructure phase).
+  redis:
+    image: redis:7-alpine     # small, well-maintained official redis image
+    restart: unless-stopped   # auto-restart on crash, but not after a manual `docker compose stop`
+    ports:
+      - "${REDIS_PORT:-6379}:6379"   # expose redis to the host so ARQ workers/API can connect via localhost
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]   # redis replies PONG when it's accepting connections
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:   # named volume backing postgres's data directory across container restarts/recreation

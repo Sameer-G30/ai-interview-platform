@@ -1,0 +1,75 @@
+# NOTE: unlike most files in this repo, .gitignore does NOT support trailing inline comments —
+# git only treats a line as a comment when '#' is the very first character, otherwise the '#'
+# and everything after it become part of the ignore pattern itself. So every comment here sits
+# on its own line, immediately above the pattern(s) it explains.
+
+# --- Python ---
+# Compiled python bytecode caches, regenerated automatically on every import.
+__pycache__/
+# Compiled python files (.pyc/.pyo/.pyd), same reasoning as __pycache__.
+*.py[cod]
+# Packaging metadata generated on install/build.
+*.egg-info/
+# Legacy setuptools build artifacts.
+.eggs/
+# Build output directories.
+build/
+# Distribution package output.
+dist/
+
+# --- Virtual environments ---
+# Per-project uv-managed virtual environment, never committed.
+.venv/
+# Fallback name some tools use for venvs.
+venv/
+# Another common venv folder name.
+env/
+
+# --- Environment / secrets ---
+# Real secrets and local config, never committed.
+.env
+# Any machine-specific env overrides.
+.env.*.local
+# Explicitly keep the committed template of env vars (negates the .env rule above for this one file).
+!.env.example
+
+# --- Backend runtime data ---
+# Local sqlite fallback db files, if ever used for quick tests.
+backend/*.db
+# Any local log output directory.
+backend/logs/
+
+# --- Datasets / models (large, regenerable, or license-sensitive) ---
+# Raw/processed datasets, too large and possibly licensed. Anchored to repo root only.
+/datasets/
+# Cached/downloaded ML model weights (whisper, sbert, ollama, etc.). Leading slash anchors this
+# to the repo root only, so it does NOT also match backend/app/models/ (the ORM models package).
+/models/
+
+# --- Frontend ---
+# Installed npm dependencies, reinstallable via package-lock.json.
+frontend/node_modules/
+# Built frontend production bundle.
+frontend/dist/
+# Vite's local cache directory.
+frontend/.vite/
+
+# --- Editors / OS cruft ---
+# Editor-specific workspace settings.
+.vscode/
+# JetBrains IDE project files.
+.idea/
+# macOS Finder metadata files.
+.DS_Store
+# Windows Explorer thumbnail cache.
+Thumbs.db
+
+# --- Test / coverage artifacts ---
+# pytest's internal cache directory.
+.pytest_cache/
+# coverage.py data file.
+.coverage
+# coverage.py generated HTML report directory.
+htmlcov/
+# ruff linter's cache directory.
+.ruff_cache/

@@ -1,0 +1,76 @@
+# CI: lints and tests the backend/ml python code on every push and pull request.
+# Frontend CI is added once the frontend-shell phase produces a package.json to lint/build.
+name: backend-ci
+
+on:
+  push:                      # run on every push to any branch
+    branches: ["**"]
+  pull_request:              # also run on PRs targeting any branch, so checks show up before merge
+    branches: ["**"]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest    # GitHub-hosted Linux runner, closest match to the WSL2 dev environment
+
+    # Spin up real Postgres+pgvector and Redis for the job, matching docker-compose.yml,
+    # so DB-dependent tests added in later phases run here without a workflow rewrite.
+    services:
+      db:
+        image: pgvector/pgvector:pg16      # same image as docker-compose.yml's `db` service
+        env:
+          POSTGRES_USER: aiip_user          # matches the default in .env.example
+          POSTGRES_PASSWORD: change_me_locally  # CI-only credential, never a real secret
+          POSTGRES_DB: aiip_db
+        ports:
+          - 5432:5432                        # exposes the service container's port to the job's steps
+        options: >-
+          --health-cmd "pg_isready -U aiip_user -d aiip_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine               # same image as docker-compose.yml's `redis` service
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Points the app/tests at the service containers above, mirroring .env.example's shape.
+      DATABASE_URL: postgresql+asyncpg://aiip_user:change_me_locally@localhost:5432/aiip_db
+      REDIS_URL: redis://localhost:6379/0
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4        # pulls the commit under test into the runner's workspace
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3      # installs the `uv` CLI itself, cached across runs
+        with:
+          enable-cache: true             # caches uv's package cache keyed on the lockfile hash
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5    # ensures a CPython 3.11 interpreter is available for uv to use
+        with:
+          python-version: "3.11.9"        # exact patch version, matching pyenv's local pin
+
+      - name: Install dependencies
+        run: uv sync --all-groups        # creates .venv and installs both main and dev dependency groups
+
+      - name: Enable pgvector extension on the CI database
+        run: |
+          # The docker-compose init script only runs for local `docker compose up`, so CI enables it explicitly.
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          PGPASSWORD=change_me_locally psql -h localhost -U aiip_user -d aiip_db -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+      - name: Run Alembic migrations
+        run: uv run alembic upgrade head   # applies the full migration chain against the CI Postgres
+
+      - name: Lint with ruff
+        run: uv run ruff check .           # fails the job on any lint violation
+
+      - name: Run tests with pytest
+        run: uv run pytest -q              # fails the job on any failing/erroring test
