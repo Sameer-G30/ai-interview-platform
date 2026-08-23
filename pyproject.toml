@@ -13,6 +13,11 @@ dependencies = [
     "pydantic>=2.9,<3",                         # data validation/settings models used throughout schemas and config
     "pydantic-settings>=2.5,<3",                # loads typed settings objects from environment variables / .env
     "python-dotenv>=1.0,<2",                    # loads .env into process environment for local development
+    "email-validator>=2.2,<3",                  # backs pydantic's EmailStr used on the User model and auth schemas
+    "pyjwt>=2.9,<3",                             # encodes/decodes signed access + refresh JWTs (replaces python-jose per plan)
+    "argon2-cffi>=23.1,<24",                    # Argon2id password hashing, the OWASP-recommended KDF for credentials
+    "slowapi>=0.1.9,<0.2",                      # per-route/per-IP rate limiting middleware for auth endpoints
+    "python-multipart>=0.0.12,<0.1",            # required by FastAPI/Starlette to parse form-encoded request bodies
 ]
 
 [dependency-groups]
@@ -30,10 +35,17 @@ src = ["backend", "ml"]                         # source roots ruff treats as fi
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]             # pycodestyle errors, pyflakes, isort, pyupgrade, and bugbear rule sets
-ignore = []                                     # no rules suppressed globally yet
+ignore = [
+    "B008",                                      # FastAPI's `Depends(...)` in a default arg is the documented idiom, not a bug
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"                           # lets pytest-asyncio run async tests without per-test decorators
+# Explicit (rather than the deprecated "unset") default: each async test/fixture gets its own fresh
+# event loop, matching pytest-asyncio's own eventual default. Our async engine's connection pool is
+# disposed after every test (see backend/tests/conftest.py's `_dispose_engine_between_tests` fixture)
+# specifically so that pooled asyncpg connections never get reused across two different event loops.
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["backend/tests"]                   # directory pytest searches for test modules
 pythonpath = [".", "backend"]                   # ensures `import app...` and `import ml...` resolve from repo root
 

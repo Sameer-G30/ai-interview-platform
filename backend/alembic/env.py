@@ -14,6 +14,7 @@ from alembic import context  # alembic's runtime context: knows which revision t
 # This inserts backend/ onto sys.path so `from app.core...` imports below succeed.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 
+import app.models  # noqa: E402,F401 - import side-effect registers every ORM model onto Base.metadata
 from app.core.config import get_settings  # noqa: E402 - single source of truth for the DATABASE_URL
 from app.core.db import Base  # noqa: E402 - declarative base whose .metadata drives autogenerate
 

@@ -29,6 +29,15 @@ class Settings(BaseSettings):
     # --- Local blob storage ---
     storage_root: str = "./data/blobs"    # filesystem root for uploaded resumes/audio
 
+    # --- Auth (JWT + Argon2id + refresh rotation) ---
+    jwt_secret_key: str = "change_this_to_a_long_random_string"  # HMAC signing secret for access/refresh JWTs
+    jwt_algorithm: str = "HS256"                    # PyJWT signing algorithm; symmetric since we control both ends
+    access_token_expire_minutes: int = 15           # short-lived access token lifetime, minimizes stolen-token blast
+    refresh_token_expire_days: int = 7              # longer-lived refresh token lifetime; rotated on every use
+
+    # --- Rate limiting (slowapi) ---
+    rate_limit_default: str = "100/minute"          # default slowapi limit string applied to auth routes
+
 
 @lru_cache
 def get_settings() -> Settings:
