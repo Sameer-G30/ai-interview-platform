@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     app_name: str = "AI Interview Intelligence Platform"  # human-readable name used in docs/logs
     api_host: str = "0.0.0.0"             # interface uvicorn binds to
     api_port: int = 8000                  # port uvicorn listens on
-    frontend_origin: str = "http://localhost:5173"  # allowed CORS origin for the Vite dev server
+    frontend_origin: str = "http://localhost:5173"  # CORS allow-list; localhost/127.0.0.1 twins are expanded
 
     # --- Database ---
     database_url: str = (
@@ -37,6 +37,26 @@ class Settings(BaseSettings):
 
     # --- Rate limiting (slowapi) ---
     rate_limit_default: str = "100/minute"          # default slowapi limit string applied to auth routes
+
+
+    def cors_allow_origins(self) -> list[str]:
+        """Origins Starlette may echo back. `localhost` and `127.0.0.1` are different origins."""
+        allowed: list[str] = []  # unique origins in the order they were discovered
+        seen: set[str] = set()  # skip duplicates after expansion
+        for raw in self.frontend_origin.split(","):  # FRONTEND_ORIGIN may list several
+            origin = raw.strip().rstrip("/")  # "http://localhost:5174/" -> "http://localhost:5174"
+            if not origin:
+                continue  # ignore empty fragments from a trailing comma
+            variants = [origin]  # always include the configured value as written
+            if "://localhost" in origin:
+                variants.append(origin.replace("://localhost", "://127.0.0.1", 1))  # Vite often prints 127.0.0.1
+            elif "://127.0.0.1" in origin:
+                variants.append(origin.replace("://127.0.0.1", "://localhost", 1))  # typed localhost in the address bar
+            for item in variants:
+                if item not in seen:
+                    seen.add(item)  # first occurrence wins
+                    allowed.append(item)  # keep a stable list for CORSMiddleware
+        return allowed  # empty only if FRONTEND_ORIGIN was blank, which should not happen
 
 
 @lru_cache

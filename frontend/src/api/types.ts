@@ -1,0 +1,65 @@
+// Shared TypeScript types that mirror the FastAPI `/auth/*` JSON contracts from Phase 2.
+
+// Product role stored on User.role; admin is NOT a third value here (it is `is_admin` on recruiter).
+export type UserRole = "candidate" | "recruiter" // the only two values POST /auth/register accepts
+
+// In-memory / localStorage shape of the token pair the interceptor and AuthProvider share.
+export type AuthTokens = {
+  accessToken: string // short-lived JWT sent as `Authorization: Bearer ...` on authenticated calls
+  refreshToken: string // opaque random secret (NOT a JWT) posted to POST /auth/refresh
+}
+
+// Exact JSON body FastAPI returns from register/login/refresh (`TokenPairResponse`).
+export type TokenPairResponse = {
+  access_token: string // JWT access token; maps to AuthTokens.accessToken
+  refresh_token: string // opaque refresh token; maps to AuthTokens.refreshToken
+  token_type: string // always "bearer" from the backend; unused by the client beyond documentation
+}
+
+// Exact JSON body FastAPI returns from GET /auth/me (`UserOut`).
+export type UserOut = {
+  id: string // UUID string of the authenticated user
+  email: string // normalized lowercase email
+  full_name: string | null // optional display name; backend allows null
+  role: UserRole // "candidate" or "recruiter" — never "admin"
+  is_admin: boolean // extra capability flag; only meaningful when role is recruiter
+  is_active: boolean // false means the account is suspended; login/refresh/me already reject these
+}
+
+// Frontend-facing user object with camelCase fields used by React components.
+export type CurrentUser = {
+  id: string // same UUID as UserOut.id
+  email: string // same email as UserOut.email
+  fullName: string | null // mapped from full_name
+  role: UserRole // mapped from role
+  isAdmin: boolean // mapped from is_admin; used only to show extra nav, not a third role
+  isActive: boolean // mapped from is_active
+}
+
+// Body for POST /auth/register; `is_admin` is intentionally absent (ops-only later).
+export type RegisterRequest = {
+  email: string // candidate or recruiter email
+  password: string // 8–128 characters, matching the backend Field constraints
+  full_name?: string | null // optional display name
+  role: UserRole // "candidate" (default on the backend) or "recruiter"
+}
+
+// Body for POST /auth/login.
+export type LoginRequest = {
+  email: string // account email
+  password: string // plaintext password; never logged
+}
+
+// Thrown by the typed fetch client when the HTTP status is not OK.
+export class ApiError extends Error {
+  readonly status: number // HTTP status code from the failed response
+  readonly detail: string // human-readable message parsed from FastAPI's `detail` field
+
+  constructor(status: number, detail: string) {
+    super(detail) // Error.message is the same string the UI can display
+    this.name = "ApiError" // distinguishes this from generic TypeError/network failures
+    this.status = status // stored so callers can branch on 401/409/422/429
+    this.detail = detail // stored separately so UI code does not have to read .message
+  }
+}
+

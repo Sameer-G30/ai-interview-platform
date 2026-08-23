@@ -1,6 +1,5 @@
-# CI: lints and tests the backend/ml python code on every push and pull request.
-# Frontend CI is added once the frontend-shell phase produces a package.json to lint/build.
-name: backend-ci
+# CI: lints/tests the backend against real Postgres+Redis, and lints/builds the frontend SPA.
+name: ci
 
 on:
   push:                      # run on every push to any branch
@@ -74,3 +73,28 @@ jobs:
 
       - name: Run tests with pytest
         run: uv run pytest -q              # fails the job on any failing/erroring test
+
+  frontend-lint-and-build:
+    runs-on: ubuntu-latest    # same Linux runner as the backend job; no DB services needed
+    defaults:
+      run:
+        working-directory: frontend  # every `run` step below executes inside frontend/
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4        # pulls the commit under test into the runner's workspace
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4      # installs Node so npm ci / lint / build can run
+        with:
+          node-version: "22"             # current Node LTS, matches a typical Vite 8 toolchain
+          cache: npm                     # caches npm's download cache
+          cache-dependency-path: frontend/package-lock.json  # key the cache on the frontend lockfile
+
+      - name: Install frontend dependencies
+        run: npm ci                      # clean install from package-lock.json, the CI-reproducible path
+
+      - name: Lint the frontend
+        run: npm run lint                # oxlint; generated shadcn files may emit warnings, not errors
+
+      - name: Build the frontend
+        run: npm run build               # tsc -b && vite build; fails the job on type or bundle errors

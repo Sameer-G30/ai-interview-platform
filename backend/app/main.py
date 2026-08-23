@@ -24,7 +24,7 @@ app = FastAPI(
 # Register CORS so the browser-based frontend (different port/origin in dev) is allowed to call us.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[settings.frontend_origin],  # only the configured frontend origin, not "*"
+    allow_origins=settings.cors_allow_origins(),  # configured origin plus localhost/127.0.0.1 twin
     allow_credentials=True,  # required so cookies/auth headers survive the CORS check
     allow_methods=["*"],  # permit all HTTP verbs the API defines (GET/POST/PATCH/...)
     allow_headers=["*"],  # permit all request headers, including Authorization

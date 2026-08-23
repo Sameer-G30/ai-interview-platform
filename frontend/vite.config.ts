@@ -11,4 +11,21 @@ export default defineConfig({
       "@": path.resolve(import.meta.dirname, "./src"), // lets imports use "@/components/..." instead of "../../.."
     },
   },
+  // This machine already has another Vite app on 5173. Stay on 5174 and refuse to hop to 5175.
+  server: {
+    host: "localhost", // printed URL matches FRONTEND_ORIGIN=http://localhost:5174
+    port: 5174, // this project's Vite port (Secure Chat uses 5173)
+    strictPort: true, // fail instead of silently opening 5175 when 5174 is busy
+    proxy: {
+      // Same-origin /auth and /health so the browser never cross-origin fetches (CORS / WSL localhost traps).
+      "/auth": {
+        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // this machine's uvicorn --port 8001
+        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
+      },
+      "/health": {
+        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // same target as /auth
+        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
+      },
+    },
+  },
 })
