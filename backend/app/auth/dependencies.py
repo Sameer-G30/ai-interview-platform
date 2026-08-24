@@ -53,6 +53,13 @@ def require_recruiter(user: User = Depends(get_current_user)) -> User:
     return user
 
 
+def require_candidate(user: User = Depends(get_current_user)) -> User:
+    """Route dependency: only candidates may proceed; recruiters get HTTP 403. Used by resume upload."""
+    if user.role != UserRole.CANDIDATE:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="candidate role required")
+    return user
+
+
 def require_admin(user: User = Depends(get_current_user)) -> User:
     """Route dependency: only recruiters with `is_admin=True` may proceed; everyone else gets HTTP 403."""
     if user.role != UserRole.RECRUITER or not user.is_admin:

@@ -1,6 +1,6 @@
 # AI Interview Intelligence Platform
 
-Status: **Phase 4 of 15 complete (job-queue)**. Full architecture diagram, seed/demo scripts, and
+Status: **Phase 5 of 15 complete (resume-pipeline)**. Full architecture diagram, seed/demo scripts, and
 deployment profile land in the hardening phase per the build plan.
 
 ## What this is
@@ -88,6 +88,48 @@ only — `ml/` is not called.
 - **Tests**: `backend/tests/test_jobs.py` against live Docker Postgres **and** Redis (enqueue, poll
 queued, succeed, fail, 401, owner-only 404).
 
+### Phase 5 — resume pipeline
+
+- **`ml/resume/`** (shared by the worker below and, later, the research harness):
+  - `parse.py` — `extract_text()` tries **PyMuPDF** first (approved primary parser; AGPL) and falls
+    back to **pypdfium2** (MIT) if PyMuPDF raises, so a deployment that cannot accept AGPL can force
+    the fallback with no other code change. `split_into_sections()` does header-line sectioning
+    (summary/experience/education/skills/projects/...); `extract_contact_info()` regexes an email
+    and phone out of the raw text.
+  - `skills.py` — ESCO-style skill matching via spaCy's `PhraseMatcher` (exact, case-insensitive
+    phrase matching against a taxonomy of `{preferred_label, aliases}`), **not** a trained NER
+    model, per Part 0. The full ~13k-skill ESCO dump is **not** committed; `data/esco_skills_sample.json`
+    is a ~50-skill curated sample enough for tests/local dev. Point `ESCO_SKILLS_PATH` at a larger
+    exported file (same `{"skills": [...]}` JSON shape, or a bare JSON list) to use the real
+    taxonomy in production — no code change needed.
+  - `ats.py` — a transparent, weighted-checklist ATS score (section presence, contact info present,
+    matched-skill count, resume length), **not** a learned model, so the score is explainable.
+  - `__init__.py` exposes `run_resume_pipeline(file_path) -> (parsed_data, ats_score)`, the single
+    entry point the worker (and later the research harness) calls.
+- **Upload endpoint**: `POST /resumes` (candidate-only; recruiters get 403) validates
+  `Content-Type: application/pdf` and a 10 MiB size cap, writes the file under
+  `Settings.storage_root` (`./data/blobs/resumes/<resume_id>.pdf`, gitignored — **never commit
+  uploaded PDFs**), inserts a `resumes` row (`status=uploaded`), enqueues `resume_parse` via the
+  existing `enqueue_job` helper, and returns `{resume_id, async_job_id, status}` immediately. No ML
+  runs in the request handler.
+- **Worker** (`app/workers/tasks.py::resume_parse`, registered in `WorkerSettings` with a 60s
+  `job_timeout`): sets the resume `processing`, runs `ml.resume.run_resume_pipeline` in a thread
+  (`asyncio.to_thread`, since PyMuPDF/spaCy are synchronous), then writes `parsed_data` + `ats_score`
+  and sets the resume `parsed`, or sets it `failed` if parsing raised. The linked `async_jobs` row is
+  updated `succeeded`/`failed` the same way `demo_echo`/`demo_fail` already were.
+- **Results endpoint**: `GET /resumes/{id}` is owner-only (404 if missing or someone else's,
+  mirroring `GET /jobs/{id}`'s not-403 convention so ids stay non-enumerable).
+- **No new Alembic migration** — `resumes` (`file_path`, `original_filename`, `status`,
+  `parsed_data`, `ats_score`) and `async_jobs` already had every column this phase needed;
+  `alembic check` reports no drift.
+- **Tests**: `backend/tests/test_resumes.py`, 8 integration tests against live Docker Postgres and
+  Redis — upload + queued, worker success with skill/ATS assertions, worker failure on a
+  no-extractable-text PDF, owner-only 404, unknown-id 404, recruiter-forbidden upload, wrong
+  content-type rejected, unauthenticated upload rejected. PDFs are generated in-memory with
+  PyMuPDF, never written to the repo.
+- **Frontend unchanged**: resume upload/results UI is Phase 6 (`frontend-resume`); the existing
+  `/candidate` job-queue demo card still works untouched.
+
 
 
 ## Local dev setup
@@ -95,7 +137,10 @@ queued, succeed, fail, 401, owner-only 404).
 ```bash
 cd "Project-2 MLIS/ai-interview-platform"
 cp .env.example .env             # then fill in real secrets locally; .env is gitignored
-uv sync                          # create .venv and install backend/ml dependencies
+uv sync                          # create .venv and install backend/ml dependencies (includes the
+                                  # en_core_web_sm spaCy model, pinned as a direct wheel URL in
+                                  # pyproject.toml so `uv sync` alone is enough — no separate
+                                  # `spacy download` step needed in local dev or CI)
 docker compose up -d             # start Postgres+pgvector and Redis
 uv run alembic upgrade head      # apply all migrations
 uv run uvicorn app.main:app --reload --app-dir backend --host 127.0.0.1 --port 8001
@@ -257,6 +302,40 @@ Swap `8000` for `8001` if that is the port you bound. Expected poll statuses: `q
 → `succeeded` with `"result": {"echo": "hello from curl"}`. A body of `{"fail": true}` ends as
 `failed` with a short `error` string.
 
+### Backend — exercising the resume pipeline by hand
+
+Postgres, Redis, the API, **and** the ARQ worker must all be running (same processes as the job
+queue above). Have any PDF file locally to upload — a real resume works, or generate a throwaway
+one:
+
+```bash
+uv run python -c "
+import pymupdf
+doc = pymupdf.open()
+page = doc.new_page()
+page.insert_text((50, 50), 'Jane Doe\njane@example.com\n\nSkills\nPython, Docker, SQL')
+doc.save('/tmp/sample_resume.pdf')
+"
+```
+
+```bash
+# Upload (use the access_token from register/login above; candidates only — recruiters get 403)
+curl -s -X POST http://localhost:8000/resumes \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  -F "file=@/tmp/sample_resume.pdf;type=application/pdf"
+# -> {"resume_id": "...", "async_job_id": "...", "status": "uploaded"}
+
+# Poll the async job (same GET /jobs/{id} as the queue demo) until it is succeeded/failed
+curl -s http://localhost:8000/jobs/<ASYNC_JOB_ID> -H "Authorization: Bearer <ACCESS_TOKEN>"
+
+# Once succeeded, read the parsed sections, matched ESCO skills, and ATS score
+curl -s http://localhost:8000/resumes/<RESUME_ID> -H "Authorization: Bearer <ACCESS_TOKEN>"
+```
+
+Expected resume poll statuses: `uploaded` → `processing` → `parsed` (with `parsed_data.sections`,
+`parsed_data.skills`, and `ats_score`) or `failed` (e.g. a PDF with no extractable text) with
+`ats_score`/`parsed_data` staying `null`. Swap `8000` for `8001` if that is the port you bound.
+
 ### Frontend — lint, build, and auth walkthrough
 
 The Vite+shadcn scaffold now has a real shell. Backend, Postgres, Redis, and the ARQ worker must be
@@ -282,10 +361,22 @@ Manual UI checks (with `npm run dev` and the API on `:8001`):
 
 `GET /` on the API still 404s; use `/health` or `/docs` (and the port you actually bound).
 
-### ml/ — nothing runnable yet
+### ml/ — resume pipeline is runnable; the rest are still stubs
 
-`ml/{llm,resume,matching,speech,scoring}/` are still empty package stubs; there is no ML code to
-test until the resume-pipeline, job-matching, llm-provider, and speech-pipeline phases land.
+`ml/resume/` (parsing, ESCO skill matching, ATS scoring) is implemented and covered by
+`backend/tests/test_resumes.py` end to end via the worker. `ml/{llm,matching,speech,scoring}/` are
+still empty package stubs; there is no ML code to test there until the job-matching, llm-provider,
+and speech-pipeline phases land.
+
+You can also exercise `ml/resume` directly, without the API/worker, for quick iteration:
+
+```bash
+uv run python -c "
+from ml.resume import run_resume_pipeline
+parsed_data, ats_score = run_resume_pipeline('/tmp/sample_resume.pdf')
+print(parsed_data['skills'], ats_score)
+"
+```
 
 ### CI
 

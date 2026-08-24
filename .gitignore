@@ -38,6 +38,9 @@ env/
 backend/*.db
 # Any local log output directory.
 backend/logs/
+# Uploaded resume/audio blobs written under Settings.storage_root (default ./data/blobs). Real
+# candidate PDFs must never be committed; anchored to repo root only.
+/data/
 
 # --- Datasets / models (large, regenerable, or license-sensitive) ---
 # Raw/processed datasets, too large and possibly licensed. Anchored to repo root only.

@@ -19,6 +19,13 @@ dependencies = [
     "slowapi>=0.1.9,<0.2",                      # per-route/per-IP rate limiting middleware for auth endpoints
     "python-multipart>=0.0.12,<0.1",            # required by FastAPI/Starlette to parse form-encoded request bodies
     "arq>=0.26,<0.27",                          # Redis job queue; FastAPI enqueues, a separate worker process runs jobs
+    "pymupdf>=1.24,<1.25",                      # primary PDF text extractor (AGPL); approved in Part 0 of the plan
+    "pypdfium2>=4.30,<5",                       # MIT fallback PDF extractor if pymupdf fails or AGPL is unacceptable
+    "spacy>=3.7,<3.8",                          # sentence/section splitting + PhraseMatcher for ESCO skill matching
+    "numpy>=1.24,<2",                           # pinned below 2.0: spacy 3.7's thinc wheels are compiled against numpy 1.x ABI
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl",
+    # ^ small English spaCy pipeline pinned as a direct wheel URL (spaCy models are not on PyPI proper)
+    # so `uv sync` installs it deterministically in local dev *and* CI without a separate `spacy download` step.
 ]
 
 [dependency-groups]
@@ -56,3 +63,6 @@ build-backend = "hatchling.build"               # entry point hatchling uses to 
 
 [tool.hatch.build.targets.wheel]
 packages = ["backend/app", "ml"]                # the two importable packages this project ships: `app` and `ml`
+
+[tool.hatch.metadata]
+allow-direct-references = true                  # required because en-core-web-sm above is pinned as a direct wheel URL, not a PyPI version
