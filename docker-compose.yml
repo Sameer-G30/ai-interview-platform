@@ -22,7 +22,7 @@ services:
       timeout: 5s          # how long a single check attempt may take
       retries: 10          # how many consecutive failures before marking the container unhealthy
 
-  # Redis, used as the ARQ job queue broker (wired up in the queue-infrastructure phase).
+  # Redis, used as the ARQ job queue broker by the API (enqueue) and `uv run arq` worker.
   redis:
     image: redis:7-alpine     # small, well-maintained official redis image
     restart: unless-stopped   # auto-restart on crash, but not after a manual `docker compose stop`

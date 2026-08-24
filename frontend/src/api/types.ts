@@ -50,6 +50,29 @@ export type LoginRequest = {
   password: string // plaintext password; never logged
 }
 
+// Job lifecycle stored on async_jobs.status; JSON is the enum value, not the member name.
+export type AsyncJobStatus = "queued" | "running" | "succeeded" | "failed" // GET /jobs/{id} status field
+
+// Exact JSON body FastAPI returns from POST /jobs/demo and GET /jobs/{id} (`AsyncJobOut`).
+export type AsyncJobOut = {
+  id: string // UUID string of the async_jobs row; poll this via GET /jobs/{id}
+  job_type: string // e.g. "demo_echo"; later resume_parse / transcribe / evaluate
+  status: AsyncJobStatus // queued while waiting, running while the worker is busy, then terminal
+  user_id: string | null // owner; GET returns 404 for another user's id
+  payload: Record<string, unknown> | null // input the worker received
+  result: Record<string, unknown> | null // output once succeeded; null otherwise
+  error: string | null // short failure summary once failed; null otherwise
+  created_at: string // ISO timestamp of row insert
+  updated_at: string // ISO timestamp of last status write
+}
+
+// Body for POST /jobs/demo; all fields optional because the backend supplies defaults.
+export type DemoJobRequest = {
+  message?: string // echoed in result.echo on success
+  sleep_ms?: number // 0–5000; SPA demo uses a short delay so queued/running is visible
+  fail?: boolean // tests only; the SPA demo never sends true
+}
+
 // Thrown by the typed fetch client when the HTTP status is not OK.
 export class ApiError extends Error {
   readonly status: number // HTTP status code from the failed response

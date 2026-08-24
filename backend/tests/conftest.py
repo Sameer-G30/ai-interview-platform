@@ -9,6 +9,7 @@ import pytest  # pytest.fixture decorator and the fixture machinery itself
 from httpx import ASGITransport, AsyncClient  # in-process HTTP client, no real network/port needed
 
 from app.core.db import AsyncSessionLocal, engine  # session factory + the shared engine's connection pool
+from app.core.redis import close_arq_pool, create_arq_pool  # live Redis pool for job-queue tests
 from app.main import app  # the FastAPI app under test
 from app.models.answer import Answer  # each model imported explicitly so cleanup can target its table
 from app.models.async_job import AsyncJob
@@ -22,6 +23,18 @@ from app.models.user import User
 # Deletion order matters: children (FK-dependent tables) before the parents they reference, so no
 # FK constraint violation occurs even though every FK here is already ON DELETE CASCADE/SET NULL.
 _TABLES_CHILD_TO_PARENT = [Score, Answer, InterviewSession, Resume, AsyncJob, Job, RefreshToken, User]
+
+
+@pytest.fixture
+async def redis_pool():
+    """Live ARQ Redis pool attached to `app.state.redis`. httpx ASGI tests do not run FastAPI lifespan."""
+    pool = await create_arq_pool()  # connect to Docker/CI Redis using REDIS_URL
+    await pool.flushdb()  # drop leftover ARQ keys so tests cannot see each other's queued jobs
+    app.state.redis = pool  # POST /jobs/demo reads the pool from request.app.state.redis
+    yield pool  # job tests enqueue through the API and/or drain with a burst Worker
+    await pool.flushdb()  # leave Redis empty for the next test
+    await close_arq_pool(pool)  # close on this test's event loop (same reason we dispose the DB engine)
+    app.state.redis = None  # do not leak the closed pool into a later test
 
 
 @pytest.fixture

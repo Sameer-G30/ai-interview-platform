@@ -23,8 +23,8 @@ class Settings(BaseSettings):
         "postgresql+asyncpg://aiip_user:change_me_locally@localhost:5432/aiip_db"
     )  # full async SQLAlchemy DSN; overridden by DATABASE_URL in .env
 
-    # --- Redis (used by ARQ starting in the queue-infrastructure phase) ---
-    redis_url: str = "redis://localhost:6379/0"  # full redis DSN
+    # --- Redis (ARQ broker; FastAPI enqueues, the worker process consumes) ---
+    redis_url: str = "redis://localhost:6379/0"  # full redis DSN used by RedisSettings.from_dsn
 
     # --- Local blob storage ---
     storage_root: str = "./data/blobs"    # filesystem root for uploaded resumes/audio
