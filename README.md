@@ -1,6 +1,6 @@
 # AI Interview Intelligence Platform
 
-Status: **Phase 5 of 15 complete (resume-pipeline)**. Full architecture diagram, seed/demo scripts, and
+Status: **Phase 6 of 15 complete (frontend-resume)**. Full architecture diagram, seed/demo scripts, and
 deployment profile land in the hardening phase per the build plan.
 
 ## What this is
@@ -56,8 +56,8 @@ UI, dashboards, and admin ops (Phase 14). `ml/` is still empty stubs.
 - **App layout**: shadcn sidebar (collapsible) + inset header, using the existing radix-nova theme
 tokens. Light/dark toggle via `next-themes` (`class` on `<html>`).
 - **Typed API client** (`frontend/src/api/`): `apiFetch` talks to FastAPI at
-`VITE_API_BASE_URL`. Leave that empty in local `npm run dev` so `/auth`, `/health`, and `/jobs`
-stay same-origin and Vite proxies them to uvicorn (`127.0.0.1:8001` on this machine). Access JWT
+`VITE_API_BASE_URL`. Leave that empty in local `npm run dev` so `/auth`, `/health`, `/jobs`, and
+`/resumes` stay same-origin and Vite proxies them to uvicorn (`127.0.0.1:8001` on this machine). Access JWT
 goes in `Authorization: Bearer`.
 Refresh tokens are **opaque strings, not JWTs**; on a 401 the client POSTs `/auth/refresh` with
 `{ refresh_token }` once (single-flight) so concurrent 401s cannot trigger reuse-detection, then
@@ -72,6 +72,8 @@ forms go to their role home. A candidate cannot open `/recruiter` and vice versa
 - **Session restore**: tokens live in `localStorage` (`aiip.auth.tokens`). Reloading the app
 rehydrates `/auth/me`. Sign out calls `POST /auth/logout` then always clears local state.
 
+
+
 ### Phase 4 — job queue (ARQ + Redis)
 
 - **Enqueue helper** (`backend/app/workers/enqueue.py`): inserts an `async_jobs` row with
@@ -84,51 +86,75 @@ only — `ml/` is not called.
 - **HTTP**: `POST /jobs/demo` (authenticated) enqueues a throwaway job and returns immediately.
 `GET /jobs/{id}` is owner-only (404 if missing or someone else's). No ML runs in a request handler.
 - **Frontend**: `useJobStatus` polls `GET /jobs/{id}` until succeeded/failed. A small demo card on
-`/candidate` proves the hook. Vite proxies `/jobs` same-origin like `/auth` and `/health`.
+`/candidate` proves the hook. Vite proxies `/jobs` same-origin like `/auth`, `/health`, and `/resumes`.
 - **Tests**: `backend/tests/test_jobs.py` against live Docker Postgres **and** Redis (enqueue, poll
 queued, succeed, fail, 401, owner-only 404).
 
+
+
 ### Phase 5 — resume pipeline
 
-- **`ml/resume/`** (shared by the worker below and, later, the research harness):
+- `ml/resume/` (shared by the worker below and, later, the research harness):
   - `parse.py` — `extract_text()` tries **PyMuPDF** first (approved primary parser; AGPL) and falls
-    back to **pypdfium2** (MIT) if PyMuPDF raises, so a deployment that cannot accept AGPL can force
-    the fallback with no other code change. `split_into_sections()` does header-line sectioning
-    (summary/experience/education/skills/projects/...); `extract_contact_info()` regexes an email
-    and phone out of the raw text.
+  back to **pypdfium2** (MIT) if PyMuPDF raises, so a deployment that cannot accept AGPL can force
+  the fallback with no other code change. `split_into_sections()` does header-line sectioning
+  (summary/experience/education/skills/projects/...); `extract_contact_info()` regexes an email
+  and phone out of the raw text.
   - `skills.py` — ESCO-style skill matching via spaCy's `PhraseMatcher` (exact, case-insensitive
-    phrase matching against a taxonomy of `{preferred_label, aliases}`), **not** a trained NER
-    model, per Part 0. The full ~13k-skill ESCO dump is **not** committed; `data/esco_skills_sample.json`
-    is a ~50-skill curated sample enough for tests/local dev. Point `ESCO_SKILLS_PATH` at a larger
-    exported file (same `{"skills": [...]}` JSON shape, or a bare JSON list) to use the real
-    taxonomy in production — no code change needed.
+  phrase matching against a taxonomy of `{preferred_label, aliases}`), **not** a trained NER
+  model, per Part 0. The full ~13k-skill ESCO dump is **not** committed; `data/esco_skills_sample.json`
+  is a ~50-skill curated sample enough for tests/local dev. Point `ESCO_SKILLS_PATH` at a larger
+  exported file (same `{"skills": [...]}` JSON shape, or a bare JSON list) to use the real
+  taxonomy in production — no code change needed.
   - `ats.py` — a transparent, weighted-checklist ATS score (section presence, contact info present,
-    matched-skill count, resume length), **not** a learned model, so the score is explainable.
+  matched-skill count, resume length), **not** a learned model, so the score is explainable.
   - `__init__.py` exposes `run_resume_pipeline(file_path) -> (parsed_data, ats_score)`, the single
-    entry point the worker (and later the research harness) calls.
+  entry point the worker (and later the research harness) calls.
 - **Upload endpoint**: `POST /resumes` (candidate-only; recruiters get 403) validates
-  `Content-Type: application/pdf` and a 10 MiB size cap, writes the file under
-  `Settings.storage_root` (`./data/blobs/resumes/<resume_id>.pdf`, gitignored — **never commit
-  uploaded PDFs**), inserts a `resumes` row (`status=uploaded`), enqueues `resume_parse` via the
-  existing `enqueue_job` helper, and returns `{resume_id, async_job_id, status}` immediately. No ML
-  runs in the request handler.
+`Content-Type: application/pdf` and a 10 MiB size cap, writes the file under
+`Settings.storage_root` (`./data/blobs/resumes/<resume_id>.pdf`, gitignored — **never commit
+uploaded PDFs**), inserts a `resumes` row (`status=uploaded`), enqueues `resume_parse` via the
+existing `enqueue_job` helper, and returns `{resume_id, async_job_id, status}` immediately. No ML
+runs in the request handler.
 - **Worker** (`app/workers/tasks.py::resume_parse`, registered in `WorkerSettings` with a 60s
-  `job_timeout`): sets the resume `processing`, runs `ml.resume.run_resume_pipeline` in a thread
-  (`asyncio.to_thread`, since PyMuPDF/spaCy are synchronous), then writes `parsed_data` + `ats_score`
-  and sets the resume `parsed`, or sets it `failed` if parsing raised. The linked `async_jobs` row is
-  updated `succeeded`/`failed` the same way `demo_echo`/`demo_fail` already were.
+`job_timeout`): sets the resume `processing`, runs `ml.resume.run_resume_pipeline` in a thread
+(`asyncio.to_thread`, since PyMuPDF/spaCy are synchronous), then writes `parsed_data` + `ats_score`
+and sets the resume `parsed`, or sets it `failed` if parsing raised. The linked `async_jobs` row is
+updated `succeeded`/`failed` the same way `demo_echo`/`demo_fail` already were.
 - **Results endpoint**: `GET /resumes/{id}` is owner-only (404 if missing or someone else's,
-  mirroring `GET /jobs/{id}`'s not-403 convention so ids stay non-enumerable).
+mirroring `GET /jobs/{id}`'s not-403 convention so ids stay non-enumerable).
 - **No new Alembic migration** — `resumes` (`file_path`, `original_filename`, `status`,
-  `parsed_data`, `ats_score`) and `async_jobs` already had every column this phase needed;
-  `alembic check` reports no drift.
+`parsed_data`, `ats_score`) and `async_jobs` already had every column this phase needed;
+`alembic check` reports no drift.
 - **Tests**: `backend/tests/test_resumes.py`, 8 integration tests against live Docker Postgres and
-  Redis — upload + queued, worker success with skill/ATS assertions, worker failure on a
-  no-extractable-text PDF, owner-only 404, unknown-id 404, recruiter-forbidden upload, wrong
-  content-type rejected, unauthenticated upload rejected. PDFs are generated in-memory with
-  PyMuPDF, never written to the repo.
-- **Frontend unchanged**: resume upload/results UI is Phase 6 (`frontend-resume`); the existing
-  `/candidate` job-queue demo card still works untouched.
+Redis — upload + queued, worker success with skill/ATS assertions, worker failure on a
+no-extractable-text PDF, owner-only 404, unknown-id 404, recruiter-forbidden upload, wrong
+content-type rejected, unauthenticated upload rejected. PDFs are generated in-memory with
+PyMuPDF, never written to the repo.
+- **Frontend in Phase 5**: upload/results UI was still later (`frontend-resume`). Phase 6 now owns that
+UI; the `/candidate` job-queue demo card is unchanged.
+
+
+
+### Phase 6 — candidate resume UI
+
+- **Vite proxy**: `/resumes` is proxied to `http://127.0.0.1:8001` next to `/auth`, `/health`, and
+`/jobs`. Leave `frontend/.env` `VITE_API_BASE_URL` empty in local `npm run dev` so the SPA stays
+same-origin (avoids localhost vs 127.0.0.1 CORS traps).
+- **Typed client** (`frontend/src/api/resumes.ts`): `uploadResume` POSTs multipart field `file` via
+`apiUpload` (XHR, so the bar can show 0–100). `fetchResume` GETs `/resumes/{id}`. `apiFetch` still
+JSON-stringifies bodies, so FormData cannot go through it.
+- **Upload page** (`/candidate/resume`): drag-and-drop plus a file-picker fallback, PDF-only, 10 MiB
+client check, progress while bytes leave the browser. After `201` the SPA navigates to
+`/candidate/resume/:resumeId?job=:asyncJobId`.
+- **Results page**: polls `GET /jobs/{id}` with the existing `useJobStatus` hook (no second poller).
+Shows queued / running / failed. Once the job is `succeeded` or `failed` (or `?job=` is missing),
+it GETs `/resumes/{id}` and renders sections, skill chips, and the ATS score card — including
+empty, pending, and failed states.
+- **Nav**: candidate **Resume** is enabled. Overview and the `/candidate` queue demo stay. No
+recruiter resume UI, interview screens, or admin screens.
+- **Tests**: backend pytest is unchanged this phase (26 passed). Frontend `npm run lint` (existing
+oxlint warnings on generated shadcn `button.tsx` / `sidebar.tsx` only) and `npm run build`.
 
 
 
@@ -165,37 +191,34 @@ npm install
 npm run dev                      # pinned to http://localhost:5174 (strict; will not hop to 5175)
 ```
 
-Type **http://localhost:5174** in a normal browser tab (do not use a Cursor-forwarded 5175). Postgres/Redis stay on 5432/6379 unless those are also taken.
+Type **[http://localhost:5174](http://localhost:5174)** in a normal browser tab (do not use a Cursor-forwarded 5175). Postgres/Redis stay on 5432/6379 unless those are also taken.
 
 ### Ports, CORS, and sharing the machine with another app
 
 Defaults are API **8000** and Vite **5173**. Those values in `.env` do **not** all do what they look like:
 
-| Setting | File | What it actually does |
-|---|---|---|
-| `API_PORT` | repo `.env` | Documented default only. **Uvicorn ignores it** unless you pass `--port`. |
-| `FRONTEND_ORIGIN` | repo `.env` | **CORS allow-list** (exact origin the browser sends). Does **not** start Vite. |
-| `VITE_API_BASE_URL` | `frontend/.env` | Where the browser calls FastAPI. Does **not** set the Vite listen port. |
-| Vite port | `frontend/vite.config.ts` + `npm run dev` | Pinned to **5174** with `strictPort` (will not hop to 5175). |
+
+| Setting             | File                                      | What it actually does                                                          |
+| ------------------- | ----------------------------------------- | ------------------------------------------------------------------------------ |
+| `API_PORT`          | repo `.env`                               | Documented default only. **Uvicorn ignores it** unless you pass `--port`.      |
+| `FRONTEND_ORIGIN`   | repo `.env`                               | **CORS allow-list** (exact origin the browser sends). Does **not** start Vite. |
+| `VITE_API_BASE_URL` | `frontend/.env`                           | Where the browser calls FastAPI. Does **not** set the Vite listen port.        |
+| Vite port           | `frontend/vite.config.ts` + `npm run dev` | Pinned to **5174** with `strictPort` (will not hop to 5175).                   |
+
 
 If another project already owns 8000/5173 (common on this machine), use **8001** and **5174**:
 
 1. Repo `.env`:
-
-   ```env
+  ```env
    API_PORT=8001
    FRONTEND_ORIGIN=http://localhost:5174
-   ```
-
+  ```
    CORS also allows the `127.0.0.1` twin of that origin. Do not drop that helper.
-
 2. Leave `frontend/.env` `VITE_API_BASE_URL` **empty** in local `npm run dev`. Vite proxies
-   `/auth`, `/health`, and `/jobs` to `http://127.0.0.1:8001`. Setting a cross-origin API URL
+  `/auth`, `/health`, `/jobs`, and `/resumes` to `http://127.0.0.1:8001`. Setting a cross-origin API URL
    reintroduces localhost vs 127.0.0.1 CORS traps.
-
 3. Start the processes with matching flags (restart both after changing env):
-
-   ```bash
+  ```bash
    # terminal 1 — API
    uv run uvicorn app.main:app --reload --app-dir backend --host 127.0.0.1 --port 8001
 
@@ -205,9 +228,8 @@ If another project already owns 8000/5173 (common on this machine), use **8001**
    # terminal 3 — Vite is pinned to 5174 in vite.config.ts / package.json
    cd frontend
    npm run dev
-   ```
-
-4. Type **http://localhost:5174** in the browser (must match `FRONTEND_ORIGIN`). If Cursor's Ports panel shows **5175**, delete that forward — it is a remap, not this app. Do not use 5173 or 5175.
+  ```
+4. Type **[http://localhost:5174](http://localhost:5174)** in the browser (must match `FRONTEND_ORIGIN`). If Cursor's Ports panel shows **5175**, delete that forward — it is a remap, not this app. Do not use 5173 or 5175.
 
 `FRONTEND_ORIGIN` and the Vite URL must match **exactly** (`http://localhost:5174` ≠ `http://localhost:5173`). A mismatch shows up as `OPTIONS /auth/register` **400** in the API log and a failed register/login in the UI.
 
@@ -215,8 +237,6 @@ If another project already owns 8000/5173 (common on this machine), use **8001**
 
 If `/health` or `/docs` belong to a **different** app (OpenAPI title should be
 `AI Interview Intelligence Platform`), you are hitting the wrong process on that port.
-
-
 
 ## How to test what's implemented
 
@@ -336,11 +356,12 @@ Expected resume poll statuses: `uploaded` → `processing` → `parsed` (with `p
 `parsed_data.skills`, and `ats_score`) or `failed` (e.g. a PDF with no extractable text) with
 `ats_score`/`parsed_data` staying `null`. Swap `8000` for `8001` if that is the port you bound.
 
-### Frontend — lint, build, and auth walkthrough
+### Frontend — lint, build, auth, and resume walkthrough
 
-The Vite+shadcn scaffold now has a real shell. Backend, Postgres, Redis, and the ARQ worker must be
-up for login/register and the demo job. CORS allows `FRONTEND_ORIGIN` and its `127.0.0.1` twin
-(this machine: `http://localhost:5174`). See **Ports, CORS, and sharing the machine with another app** above.
+The Vite+shadcn scaffold now has a real shell plus candidate resume upload/results. Backend, Postgres,
+Redis, and the ARQ worker must be up for login/register, the demo job, and resume parsing. CORS allows
+`FRONTEND_ORIGIN` and its `127.0.0.1` twin (this machine: `http://localhost:5174`). See **Ports, CORS,
+and sharing the machine with another app** above.
 
 ```bash
 cd "Project-2 MLIS/ai-interview-platform/frontend"
@@ -352,12 +373,13 @@ npm run dev      # pinned to http://localhost:5174 (strictPort)
 Manual UI checks (with `npm run dev` and the API on `:8001`):
 
 1. Open `http://localhost:5174` — you should be redirected to `/login` (not a 404; that 404 is only `GET /` on the API). Type that URL in a normal browser; a Cursor terminal link may remap 5174 to 5175.
-2. Click through to **Create one**, register a **candidate** (password ≥ 8 chars). You should land on `/candidate` with the sidebar showing Overview (live) and Resume/Interview (disabled, later phases).
-3. Sign out. Register a **recruiter**. You should land on `/recruiter`. Visiting `/candidate` as a recruiter should bounce you back to `/recruiter`.
-4. Sign out, sign back in with the same account — session restore from localStorage should skip the forms.
+2. Click through to **Create one**, register a **candidate** (password ≥ 8 chars). You should land on `/candidate` with the sidebar showing Overview (live), **Resume** (live), and Interview (disabled, later phases).
+3. Sign out. Register a **recruiter**. You should land on `/recruiter`. Visiting `/candidate` as a recruiter should bounce you back to `/recruiter`. Recruiters have no Resume nav.
+4. Sign out, sign back in with the same account — session restore from localStorage (`aiip.auth.tokens`) should skip the forms.
 5. Reload the page while signed in — `/auth/me` should repopulate the shell. If the access JWT has expired, the client will rotate the opaque refresh token via `POST /auth/refresh` without a visible logout.
 6. A recruiter with `is_admin=true` (set in the database by an operator, never via register) shows a disabled **Admin** row. There is no admin dashboard in this phase.
-7. On `/candidate`, click **Run demo job** (API + Redis + worker must be up). Status should move queued → running → succeeded and show the echo text. Leave `frontend/.env` `VITE_API_BASE_URL` empty so `/jobs` stays same-origin through the Vite proxy.
+7. On `/candidate`, click **Run demo job** (API + Redis + worker must be up). Status should move queued → running → succeeded and show the echo text. Leave `frontend/.env` `VITE_API_BASE_URL` empty so `/jobs` and `/resumes` stay same-origin through the Vite proxy.
+8. Click **Resume** (or **Open resume upload**). Drop or pick a text-based PDF (≤ 10 MiB). A non-PDF should be rejected in the dropzone. After **Upload and parse**, you should land on the results page, see queued → running → succeeded, then sections, skill chips, and an ATS score. A PDF with no extractable text should show the failed job/resume states instead of a blank page.
 
 `GET /` on the API still 404s; use `/health` or `/docs` (and the port you actually bound).
 
@@ -378,6 +400,8 @@ print(parsed_data['skills'], ats_score)
 "
 ```
 
+
+
 ### CI
 
 Every push/PR runs `.github/workflows/ci.yml`:
@@ -395,5 +419,4 @@ cd "/home/sam/projects/Project-2 MLIS/ai-interview-platform" && \
   uv sync && docker compose up -d && uv run alembic upgrade head && uv run pytest -q
 ```
 
-Worker (separate process, repo root): `uv run arq app.workers.settings.WorkerSettings`. SPA: `cd frontend && npm install && npm run dev`.
-
+Worker (separate process, repo root): `uv run arq app.workers.settings.WorkerSettings`. SPA: `cd frontend && npm install && npm run dev` (leave `VITE_API_BASE_URL` empty so `/auth`, `/health`, `/jobs`, and `/resumes` stay same-origin via the Vite proxy).

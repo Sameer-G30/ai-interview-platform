@@ -29,10 +29,10 @@ type NavItem = {
   adminOnly?: boolean // true for the admin placeholder; only shown when user.isAdmin
 }
 
-// Candidate nav: overview is live in Phase 3; resume/interview screens land later.
+// Candidate nav: overview is live in Phase 3; resume upload/results are Phase 6; interview is later.
 const candidateNav: NavItem[] = [
   { title: "Overview", href: "/candidate", icon: LayoutDashboardIcon }, // live placeholder home
-  { title: "Resume", icon: FileTextIcon, disabled: true }, // Phase 5/6
+  { title: "Resume", href: "/candidate/resume", icon: FileTextIcon }, // Phase 6 upload + parsed results
   { title: "Interview", icon: MicIcon, disabled: true }, // Phase 8/9
 ]
 
@@ -95,7 +95,7 @@ export function AppSidebar() {
                 <SidebarMenuItem key={item.title}>
                   {item.href && !item.disabled ? (
                     <SidebarMenuButton asChild tooltip={item.title}>
-                      <NavLink to={item.href}>
+                      <NavLink to={item.href} end={item.href === "/candidate" || item.href === "/recruiter"}>
                         <item.icon />
                         <span>{item.title}</span>
                       </NavLink>

@@ -32,7 +32,7 @@ export function JobQueueDemo() {
       <CardHeader>
         <CardTitle>Queue demo</CardTitle>
         <CardDescription>
-          Phase 4 check: enqueue a throwaway echo job and poll GET /jobs/{"{id}"}. Resume upload comes later.
+          Phase 4 check: enqueue a throwaway echo job and poll GET /jobs/{"{id}"}. Resume upload is on the Resume page.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">

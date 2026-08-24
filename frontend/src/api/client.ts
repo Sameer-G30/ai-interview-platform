@@ -25,7 +25,7 @@ export function getApiBaseUrl(): string {
     return raw.replace(/\/+$/, "") // "http://127.0.0.1:8001/" -> "http://127.0.0.1:8001"
   }
   if (import.meta.env.DEV) {
-    return "" // same-origin; Vite proxies /auth, /health, and /jobs to uvicorn (avoids CORS)
+    return "" // same-origin; Vite proxies /auth, /health, /jobs, and /resumes to uvicorn (avoids CORS)
   }
   return "http://localhost:8000" // production-style default when no VITE_API_BASE_URL is set
 }
@@ -154,4 +154,86 @@ export async function apiFetch<T>(path: string, options: ApiRequestOptions = {})
     throw new ApiError(response.status, detailFromBody(body, fallback)) // UI displays .detail
   }
   return body as T // caller is responsible for the expected success shape
+}
+
+// Options for multipart upload; `onProgress` is 0–100 from XMLHttpRequest (fetch has no upload progress).
+export type ApiUploadOptions = {
+  auth?: boolean // when true (default), attach the access token if we have one
+  skipRefresh?: boolean // when true, a 401 is returned as an error instead of triggering rotation
+  onProgress?: (percent: number) => void // called as bytes leave the browser; 100 does not mean the worker finished
+}
+
+// Sends one XMLHttpRequest with a FormData body; never sets Content-Type so the browser supplies the boundary.
+function rawUpload(
+  path: string, // API path beginning with /
+  formData: FormData, // multipart body; field name is chosen by the caller (resumes use `file`)
+  accessToken: string | null, // Bearer token or null for a public upload (none exist today)
+  onProgress?: (percent: number) => void, // optional 0–100 callback from xhr.upload.onprogress
+): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest() // XHR is required for upload progress; fetch cannot report it
+    const url = `${getApiBaseUrl()}${path.startsWith("/") ? path : `/${path}`}` // same origin join as rawRequest
+    xhr.open("POST", url) // resume upload is always POST
+    xhr.setRequestHeader("Accept", "application/json") // we still want FastAPI JSON back
+    if (accessToken !== null) {
+      xhr.setRequestHeader("Authorization", `Bearer ${accessToken}`) // access JWT; do not set Content-Type
+    }
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || onProgress === undefined) {
+        return // some browsers omit total; skip rather than reporting NaN
+      }
+      onProgress(Math.round((event.loaded / event.total) * 100)) // 0–100 integer for the progress bar
+    }
+    xhr.onload = () => {
+      const text = xhr.responseText // read once; empty bodies are valid
+      let parsed: unknown = undefined // 201 JSON or an error detail object
+      if (text.length > 0) {
+        try {
+          parsed = JSON.parse(text) as unknown // FastAPI JSON
+        } catch {
+          parsed = text // unexpected non-JSON; keep the raw text for the error message
+        }
+      }
+      resolve({ status: xhr.status, body: parsed }) // caller decides ok vs ApiError
+    }
+    xhr.onerror = () => {
+      reject(new ApiError(0, `could not reach the API at ${getApiBaseUrl() || window.location.origin}`)) // network / CORS
+    }
+    xhr.send(formData) // browser sets multipart/form-data with the correct boundary
+  })
+}
+
+// Public multipart POST: FormData in, JSON out, ApiError on failure, one refresh-and-retry on 401.
+export async function apiUpload<T>(path: string, formData: FormData, options: ApiUploadOptions = {}): Promise<T> {
+  const auth = options.auth !== false // default to attaching the access token
+  const skipRefresh = options.skipRefresh === true // not used by resume upload today; kept for symmetry with apiFetch
+  const firstTokens = getTokens() // may be null if the session was cleared
+  let result: { status: number; body: unknown }
+  try {
+    result = await rawUpload(path, formData, auth ? (firstTokens?.accessToken ?? null) : null, options.onProgress) // first attempt
+  } catch (error) {
+    if (error instanceof ApiError) {
+      throw error // already a typed network error from xhr.onerror
+    }
+    throw new ApiError(0, `could not reach the API at ${getApiBaseUrl() || window.location.origin}`) // unexpected throw
+  }
+  if (result.status === 401 && auth && !skipRefresh) {
+    const refreshed = await refreshSession() // single-flight rotation of the opaque refresh token
+    if (refreshed) {
+      const retryTokens = getTokens() // pair written by refreshSession
+      try {
+        result = await rawUpload(path, formData, retryTokens?.accessToken ?? null, options.onProgress) // one retry
+      } catch (error) {
+        if (error instanceof ApiError) {
+          throw error // typed network error on the retry
+        }
+        throw new ApiError(0, `could not reach the API at ${getApiBaseUrl() || window.location.origin}`) // unexpected throw
+      }
+    }
+  }
+  if (result.status < 200 || result.status >= 300) {
+    const fallback = result.status === 429 ? "too many requests — try again in a minute" : "request failed"
+    throw new ApiError(result.status, detailFromBody(result.body, fallback)) // UI displays .detail
+  }
+  return result.body as T // caller is responsible for the expected success shape
 }

@@ -73,7 +73,47 @@ export type DemoJobRequest = {
   fail?: boolean // tests only; the SPA demo never sends true
 }
 
-// Thrown by the typed fetch client when the HTTP status is not OK.
+// Lifecycle stored on resumes.status; JSON is the enum value, not the member name.
+export type ResumeStatus = "uploaded" | "processing" | "parsed" | "failed" // GET /resumes/{id} status field
+
+// Per-signal ATS attribution stored under parsed_data.ats_breakdown once parsing succeeds.
+export type AtsBreakdown = {
+  section_points: number // points awarded for expected section headers being present
+  contact_points: number // points awarded for email and/or phone being found
+  skill_points: number // points awarded for ESCO PhraseMatcher hits
+  length_points: number // points awarded for a healthy word count
+  total: number // sum of the four signals, already clamped to [0, 100]
+}
+
+// JSON object written to resumes.parsed_data by ml.resume.run_resume_pipeline.
+export type ParsedResumeData = {
+  sections: Record<string, string> // section name -> extracted body text
+  skills: string[] // de-duplicated ESCO preferred labels
+  email: string | null // first email regex hit, if any
+  phone: string | null // first phone regex hit, if any
+  extractor_used: string // "pymupdf" or "pypdfium2"
+  ats_breakdown: AtsBreakdown // explainable per-signal score
+  word_count: number // whitespace-split token count of the raw extract
+}
+
+// Exact JSON body FastAPI returns from POST /resumes (`ResumeUploadOut`).
+export type ResumeUploadOut = {
+  resume_id: string // UUID string; poll results via GET /resumes/{resume_id}
+  async_job_id: string // UUID string; poll parse progress via GET /jobs/{async_job_id}
+  status: ResumeStatus // "uploaded" at this point; the worker advances it
+}
+
+// Exact JSON body FastAPI returns from GET /resumes/{id} (`ResumeOut`).
+export type ResumeOut = {
+  id: string // UUID string of the resumes row
+  original_filename: string // candidate's filename, for display
+  status: ResumeStatus // uploaded | processing | parsed | failed
+  parsed_data: ParsedResumeData | null // sections/skills/contact once status == parsed
+  ats_score: number | null // 0–100 once status == parsed; null otherwise
+  created_at: string // ISO timestamp of row insert
+  updated_at: string // ISO timestamp of last status write
+}
+
 export class ApiError extends Error {
   readonly status: number // HTTP status code from the failed response
   readonly detail: string // human-readable message parsed from FastAPI's `detail` field

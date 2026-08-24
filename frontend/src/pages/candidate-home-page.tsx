@@ -1,7 +1,10 @@
-import { JobQueueDemo } from "@/components/jobs/queue-demo" // Phase 4 enqueue + poll proof on the candidate home
+import { Link } from "react-router-dom" // in-app link to the Phase 6 resume upload screen
+
+import { JobQueueDemo } from "@/components/jobs/queue-demo" // Phase 4 enqueue + poll proof; keep this card
+import { Button } from "@/components/ui/button" // outline link styled as a button; do not restyle the primitive
 import { useAuth } from "@/hooks/use-auth" // current user for the welcome copy
 
-// Candidate landing: auth proof from Phase 3 plus a throwaway queue demo. Resume/interview screens come later.
+// Candidate landing: auth proof from Phase 3, queue demo from Phase 4, link to Phase 6 resume upload.
 export function CandidateHomePage() {
   const { user } = useAuth() // RequireRole already guaranteed a candidate
 
@@ -10,8 +13,11 @@ export function CandidateHomePage() {
       <div className="flex flex-col gap-3">
         <h1 className="text-2xl font-semibold">Candidate home</h1>
         <p className="text-muted-foreground">
-          Signed in as {user?.email}. Resume upload, parsed results, and interviews will appear here in later phases.
+          Signed in as {user?.email}. Upload a PDF resume to parse skills and an ATS score. Interviews come later.
         </p>
+        <Button type="button" variant="outline" asChild>
+          <Link to="/candidate/resume">Open resume upload</Link>
+        </Button>
       </div>
       <JobQueueDemo />
     </div>
