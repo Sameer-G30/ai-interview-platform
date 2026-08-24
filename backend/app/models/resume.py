@@ -2,6 +2,7 @@
 
 import uuid  # FK columns reference User.id
 
+from pgvector.sqlalchemy import Vector  # pgvector's SQLAlchemy column type, backs the 384-d SBERT embedding
 from sqlalchemy import JSON, Enum, Float, ForeignKey, String, Uuid  # column types for status/parsed payload
 from sqlalchemy.orm import Mapped, mapped_column, relationship  # typed columns + relationship declarations
 
@@ -11,8 +12,8 @@ from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin  # id + create
 
 
 class Resume(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """One resume upload belonging to a candidate. `parsed_data`/`ats_score` stay NULL until the
-    resume-pipeline phase's worker fills them in; this phase only needs the upload + status shape."""
+    """One resume upload belonging to a candidate. `parsed_data`/`ats_score`/`embedding` stay NULL
+    until the `resume_parse` worker fills them in once parsing succeeds."""
 
     __tablename__ = "resumes"
 
@@ -29,6 +30,9 @@ class Resume(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # JSON (not JSONB-specific type) keeps this portable; Postgres still stores pydantic-encoded dicts fine.
     parsed_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     ats_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # 384-d SBERT vector over the resume's sections/skills text, written by `resume_parse` right after
+    # `parsed_data`/`ats_score` succeed; NULL until then (or if the resume failed to parse at all).
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(384), nullable=True)
 
     # Back-reference to the owning candidate.
     user: Mapped["User"] = relationship()  # noqa: F821

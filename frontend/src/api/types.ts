@@ -114,6 +114,52 @@ export type ResumeOut = {
   updated_at: string // ISO timestamp of last status write
 }
 
+// Body for POST /postings; required_skills stays one freeform textarea string, matching the backend.
+export type CreatePostingRequest = {
+  title: string // 1–200 chars, matches Job.title's column length
+  description: string // free text; Job.description is an unbounded Text column
+  required_skills?: string | null // comma/line separated; optional
+  is_active?: boolean // defaults true server-side if omitted
+}
+
+// Body for PATCH /postings/{id}; only is_active is mutable, no hard delete exists.
+export type UpdatePostingRequest = {
+  is_active: boolean
+}
+
+// Exact JSON body FastAPI returns for one posting (`PostingOut`), from POST/GET/PATCH /postings*.
+export type PostingOut = {
+  id: string // UUID string of the jobs row
+  title: string
+  description: string
+  required_skills: string | null
+  is_active: boolean
+  has_embedding: boolean // true once the posting_embed worker has written Job.embedding
+  created_at: string // ISO timestamp of row insert
+  updated_at: string // ISO timestamp of last update
+}
+
+// Exact JSON body FastAPI returns from POST /postings (`PostingCreateOut`).
+export type PostingCreateOut = {
+  posting: PostingOut
+  async_job_id: string // poll embedding progress via the existing GET /jobs/{async_job_id}
+}
+
+// One ranked posting from GET /matches (`MatchOut`).
+export type MatchOut = {
+  posting_id: string // UUID string of the jobs row
+  title: string
+  score: number // SBERT cosine similarity, practically in [0, 1]
+  matched_skills: string[] // required skills the resume already has (sorted ESCO preferred labels)
+  missing_skills: string[] // required skills the resume is missing (sorted ESCO preferred labels)
+}
+
+// Exact JSON body FastAPI returns from GET /matches (`MatchListOut`).
+export type MatchListOut = {
+  resume_id: string // the parsed resume this ranking was computed against
+  matches: MatchOut[] // sorted by score descending
+}
+
 export class ApiError extends Error {
   readonly status: number // HTTP status code from the failed response
   readonly detail: string // human-readable message parsed from FastAPI's `detail` field

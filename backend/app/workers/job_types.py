@@ -10,6 +10,9 @@ JOB_TYPE_DEMO_FAIL = "demo_fail"  # always raises; used by tests to cover the fa
 # Resume-pipeline phase: PyMuPDF/pypdfium2 extraction, spaCy sectioning, ESCO skill match, ATS score.
 # Still a plain string (not a Postgres ENUM) so later job types (transcribe, evaluate, ...) never need a migration.
 JOB_TYPE_RESUME_PARSE = "resume_parse"
+# Job-matching phase: embeds one posting's title+description+required_skills text into `jobs.embedding`.
+# `POST /postings` enqueues this right after inserting the row, mirroring resume_parse's pattern.
+JOB_TYPE_POSTING_EMBED = "posting_embed"
 
 # ARQ enqueue_job's first argument is the worker function's registered name, which we keep identical
 # to job_type so the Postgres row and the Redis message point at the same handler.
@@ -17,4 +20,5 @@ JOB_TYPE_TO_FUNCTION: dict[str, str] = {
     JOB_TYPE_DEMO_ECHO: "demo_echo",  # handled by app.workers.tasks.demo_echo
     JOB_TYPE_DEMO_FAIL: "demo_fail",  # handled by app.workers.tasks.demo_fail
     JOB_TYPE_RESUME_PARSE: "resume_parse",  # handled by app.workers.tasks.resume_parse
+    JOB_TYPE_POSTING_EMBED: "posting_embed",  # handled by app.workers.tasks.posting_embed
 }

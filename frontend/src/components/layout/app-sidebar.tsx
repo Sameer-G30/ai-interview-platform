@@ -29,17 +29,18 @@ type NavItem = {
   adminOnly?: boolean // true for the admin placeholder; only shown when user.isAdmin
 }
 
-// Candidate nav: overview is live in Phase 3; resume upload/results are Phase 6; interview is later.
+// Candidate nav: overview/resume are live; matches are Phase 7; interview is later.
 const candidateNav: NavItem[] = [
   { title: "Overview", href: "/candidate", icon: LayoutDashboardIcon }, // live placeholder home
   { title: "Resume", href: "/candidate/resume", icon: FileTextIcon }, // Phase 6 upload + parsed results
+  { title: "Matches", href: "/candidate/matches", icon: BriefcaseIcon }, // Phase 7 ranked postings + skill gap
   { title: "Interview", icon: MicIcon, disabled: true }, // Phase 8/9
 ]
 
-// Recruiter nav: overview is live; jobs/candidates/admin are later phases.
+// Recruiter nav: overview/jobs are live; candidates/admin are later phases.
 const recruiterNav: NavItem[] = [
   { title: "Overview", href: "/recruiter", icon: LayoutDashboardIcon }, // live placeholder home
-  { title: "Jobs", icon: BriefcaseIcon, disabled: true }, // later recruiter work
+  { title: "Jobs", href: "/recruiter/jobs", icon: BriefcaseIcon }, // Phase 7 posting create/list/deactivate
   { title: "Candidates", icon: UsersIcon, disabled: true }, // later recruiter work
   { title: "Admin", icon: ShieldIcon, disabled: true, adminOnly: true }, // Phase 14; shown only when is_admin
 ]

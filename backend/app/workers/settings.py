@@ -3,7 +3,7 @@
 from arq.worker import Worker, func  # Worker for in-process burst tests; func() sets per-task max_tries
 
 from app.core.redis import get_redis_settings  # same REDIS_URL the API uses
-from app.workers.tasks import demo_echo, demo_fail, resume_parse  # Phase 4 demo jobs + resume-pipeline's real task
+from app.workers.tasks import demo_echo, demo_fail, posting_embed, resume_parse  # demo + resume/posting ML tasks
 
 
 async def startup(ctx: dict) -> None:
@@ -28,7 +28,11 @@ class WorkerSettings:
         func(demo_fail, name="demo_fail", max_tries=1),  # same: FAILED is terminal for the demo path
         # 60s cap: PyMuPDF/spaCy/PhraseMatcher on a resume-sized PDF is sub-second in practice, but a
         # pathological file (huge page count, degenerate text layer) must not hang the worker forever.
+        # The SBERT embedding step added in the job-matching phase runs in this same task/timeout.
         func(resume_parse, name="resume_parse", max_tries=1, timeout=60),
+        # Embedding one posting's title+description+required_skills text is a single small SBERT
+        # encode call; 60s matches resume_parse's cap even though it typically finishes in well under 1s.
+        func(posting_embed, name="posting_embed", max_tries=1, timeout=60),
     ]
     redis_settings = get_redis_settings()  # parsed once at import from REDIS_URL / Settings
     on_startup = startup  # called when the worker process (or burst Worker) starts

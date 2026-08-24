@@ -22,3 +22,13 @@ export const registerSchema = z.object({
 
 // Type inferred from the register schema, used by useForm<RegisterValues>().
 export type RegisterValues = z.infer<typeof registerSchema> // { email, password, full_name?, role }
+
+// Recruiter posting form: required_skills is one freeform textarea string, matching CreatePostingRequest.
+export const createPostingSchema = z.object({
+  title: z.string().min(1, "title is required").max(200, "title is too long"), // matches Job.title's column length
+  description: z.string().min(1, "description is required"), // matches Job.description's NOT NULL constraint
+  required_skills: z.string().max(2000, "required skills text is too long").optional(), // optional freeform text
+})
+
+// Type inferred from the create-posting schema, used by useForm<CreatePostingValues>().
+export type CreatePostingValues = z.infer<typeof createPostingSchema> // { title, description, required_skills? }

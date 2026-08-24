@@ -2,6 +2,7 @@
 
 import uuid  # FK columns reference User.id
 
+from pgvector.sqlalchemy import Vector  # pgvector's SQLAlchemy column type, backs the 384-d SBERT embedding
 from sqlalchemy import Boolean, ForeignKey, String, Text, Uuid  # column + constraint types used below
 from sqlalchemy.orm import Mapped, mapped_column, relationship  # typed columns + relationship declarations
 
@@ -10,9 +11,8 @@ from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin  # id + create
 
 
 class Job(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """A job posting. Skill/embedding columns used by the matching phase are added in a later migration
-    once `pgvector`'s SQLAlchemy type is actually a dependency - keeping this phase's schema honest about
-    what auth-data actually needs today."""
+    """A job posting created by a recruiter (`/postings` router) and matched against by candidates
+    (`/matches` router) once `embedding` is populated by the `posting_embed` worker task."""
 
     __tablename__ = "jobs"
 
@@ -28,6 +28,9 @@ class Job(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     required_skills: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Lets a recruiter stop accepting new interview sessions against a posting without deleting its history.
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # 384-d SBERT vector over title+description+required_skills, written by the `posting_embed` worker
+    # task once `POST /postings` enqueues it; NULL until that job succeeds (or if it fails/is pending).
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(384), nullable=True)
 
     # Convenience back-reference to the posting recruiter; no cascade defined here since deleting a
     # recruiter cascades from the User side (recruiter_id FK above), not from this relationship.

@@ -26,6 +26,9 @@ dependencies = [
     "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl",
     # ^ small English spaCy pipeline pinned as a direct wheel URL (spaCy models are not on PyPI proper)
     # so `uv sync` installs it deterministically in local dev *and* CI without a separate `spacy download` step.
+    "sentence-transformers>=3.0,<4",             # loads all-MiniLM-L6-v2 to embed resume/posting text into 384-d vectors
+    "scikit-learn>=1.5,<2",                     # TfidfVectorizer + cosine_similarity, the baseline matching arm
+    "pgvector>=0.3,<0.4",                       # SQLAlchemy Vector column type + numpy adapter for Postgres pgvector
 ]
 
 [dependency-groups]

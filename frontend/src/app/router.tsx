@@ -6,11 +6,13 @@ import { RequireRole } from "@/components/auth/require-role" // candidate cannot
 import { RoleLanding } from "@/components/auth/role-landing" // `/` -> login or role home
 import { AppShell } from "@/components/layout/app-shell" // sidebar + header around authenticated pages
 import { CandidateHomePage } from "@/pages/candidate-home-page" // candidate landing
+import { CandidateMatchesPage } from "@/pages/candidate-matches-page" // ranked postings + skill gap
 import { CandidateResumeResultsPage } from "@/pages/candidate-resume-results-page" // parsed ATS / skills / sections
 import { CandidateResumeUploadPage } from "@/pages/candidate-resume-upload-page" // drag-drop PDF upload
 import { LoginPage } from "@/pages/login-page" // POST /auth/login form
 import { NotFoundPage } from "@/pages/not-found-page" // unknown paths
 import { RecruiterHomePage } from "@/pages/recruiter-home-page" // recruiter landing
+import { RecruiterJobsPage } from "@/pages/recruiter-jobs-page" // posting create/list/deactivate
 import { RegisterPage } from "@/pages/register-page" // POST /auth/register form
 
 // Route tree for the Phase 3 shell: guest forms, role homes, and a 404.
@@ -57,10 +59,26 @@ export const router = createBrowserRouter([
             ),
           },
           {
+            path: "/candidate/matches",
+            element: (
+              <RequireRole role="candidate">
+                <CandidateMatchesPage />
+              </RequireRole>
+            ),
+          },
+          {
             path: "/recruiter",
             element: (
               <RequireRole role="recruiter">
                 <RecruiterHomePage />
+              </RequireRole>
+            ),
+          },
+          {
+            path: "/recruiter/jobs",
+            element: (
+              <RequireRole role="recruiter">
+                <RecruiterJobsPage />
               </RequireRole>
             ),
           },

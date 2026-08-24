@@ -34,6 +34,14 @@ export default defineConfig({
         target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // same target as /auth so POST /resumes stays same-origin
         changeOrigin: true, // set Host to the API so FastAPI sees a normal request
       },
+      "/postings": {
+        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // same target as /auth so /postings stays same-origin
+        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
+      },
+      "/matches": {
+        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // same target as /auth so /matches stays same-origin
+        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
+      },
     },
   },
 })
