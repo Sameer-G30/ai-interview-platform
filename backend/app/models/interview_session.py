@@ -1,6 +1,6 @@
 """The `interview_sessions` table: one candidate's attempt at an (optionally job-targeted) interview."""
 
-import uuid  # FK columns reference User.id / Job.id
+import uuid  # FK columns reference User.id / Job.id / Resume.id
 from datetime import datetime  # started_at/completed_at are nullable timestamps distinct from created_at
 
 from sqlalchemy import DateTime, Enum, ForeignKey, Uuid  # column types used below
@@ -12,13 +12,16 @@ from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin  # id + create
 
 
 class InterviewSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """A candidate's interview run. Question generation/persistence lands in the interview-engine phase;
-    this phase only needs the session shell so `answers`/`scores` have somewhere to attach."""
+    """A candidate's interview run. Started from an owned parsed resume; optional `job_id` is a posting."""
 
     __tablename__ = "interview_sessions"
 
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # Required: every session is generated from one parsed resume's extracted skills (same selection as /matches).
+    resume_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("resumes.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     # Nullable: a candidate can practice generically without targeting a specific posting.
     job_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -29,14 +32,19 @@ class InterviewSession(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         nullable=False,
         default=InterviewSessionStatus.SCHEDULED,
     )
-    # Set when the candidate answers the first question; distinct from created_at (row creation time).
+    # Set when generated questions are persisted (scheduled -> in_progress); distinct from created_at.
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Set when status transitions to COMPLETED; scoring can only run once this is non-NULL.
+    # Set when status transitions to COMPLETED; scoring (Phase 12) can only run once this is non-NULL.
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    # Back-references; no cascade delete-orphan here because answers/scores manage their own cascade
-    # from their own FK's ondelete="CASCADE" rather than through the ORM relationship.
+    # Back-references; answers/scores cascade from their own FKs. Resume is RESTRICT so a resume
+    # with sessions cannot disappear under an in-flight interview (we do not hard-delete resumes).
     user: Mapped["User"] = relationship()  # noqa: F821
+    resume: Mapped["Resume"] = relationship()  # noqa: F821
     job: Mapped["Job | None"] = relationship()  # noqa: F821
-    answers: Mapped[list["Answer"]] = relationship(back_populates="session", cascade="all, delete-orphan")  # noqa: F821
+    answers: Mapped[list["Answer"]] = relationship(  # noqa: F821
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="Answer.question_order",  # GET /interviews/{id} returns questions in ask order
+    )
     score: Mapped["Score | None"] = relationship(back_populates="session", cascade="all, delete-orphan")  # noqa: F821

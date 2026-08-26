@@ -1,6 +1,6 @@
 # AI Interview Intelligence Platform
 
-Status: **Phase 8 of 15 complete (llm-provider)**. Full architecture diagram, seed/demo scripts, and
+Status: **Phase 9 of 15 complete (interview-engine)**. Full architecture diagram, seed/demo scripts, and
 deployment profile land in the hardening phase per the build plan.
 
 ## What this is
@@ -223,7 +223,7 @@ skill chips) verified on both a desktop and a mobile viewport.
 ### Phase 8 — LLM provider (library only)
 
 - `ml/llm/` (shared by a later interview worker and the research harness; **not** called from FastAPI
-  request handlers this phase):
+request handlers this phase):
   - `provider.py` — `LLMConfig`, `get_provider()`, `LLMProvider.complete_json()`, `evaluate_answer()`.
   The product and a research harness call this one facade. Invalid JSON and schema failures are
   `LLMJSONError` / `LLMSchemaError` — never a silent fallback to free text, and markdown fences are
@@ -237,21 +237,71 @@ skill chips) verified on both a desktop and a mobile viewport.
   - `schemas.py` — `AnswerEvaluation` (integer `score` 0–5, `rationale`, `strengths`, `improvements`).
   - `rubrics/` — versioned markdown files (`technical_answer_v1.md`, `behavioral_answer_v1.md`).
   Bumping a rubric is a new file; backends never hardcode the 0–5 wording.
-- **Settings**: `LLM_PROVIDER`, `OLLAMA_*`, `OPENAI_COMPAT_*` from `.env.example` are real
-  `Settings` fields. Product code should map them with `config_from_settings(get_settings())` —
-  pydantic-settings does **not** copy `.env` into `os.environ`. No new Alembic migration (provider
-  config is not a table).
+- **Settings**: `LLM_PROVIDER`, `OLLAMA_`*, `OPENAI_COMPAT_*` from `.env.example` are real
+`Settings` fields. Product code should map them with `config_from_settings(get_settings())` —
+pydantic-settings does **not** copy `.env` into `os.environ`. No new Alembic migration (provider
+config is not a table).
 - **httpx** is now a main dependency (was test-only). It does not pull numpy 2.x; the spaCy pin
-  `numpy>=1.24,<2` stays authoritative (`1.26.4` verified after `uv lock`).
+`numpy>=1.24,<2` stays authoritative (`1.26.4` verified after `uv lock`).
 - **Tests**: `backend/tests/test_ml_llm.py` — schema enforcement, factory selection, MockTransport
-  HTTP for both backends, rubric loading, and one live-Ollama smoke that `pytest.skip()`s if the
-  daemon is down or has no models. **72 passed** (53 prior + 19 new) against live Docker Postgres
-  and Redis. The live smoke on this machine used an already-pulled tag (`llama3.2:latest`) because
-  `.env.example`'s `llama3.1:8b-instruct-q4_K_M` was not pulled; the test falls back to the first
-  pulled model rather than failing CI.
+HTTP for both backends, rubric loading, and one live-Ollama smoke that `pytest.skip()`s if the
+daemon is down or has no models. **72 passed** (53 prior + 19 new) against live Docker Postgres
+and Redis. The live smoke on this machine used an already-pulled tag (`llama3.2:latest`) because
+`.env.example`'s `llama3.1:8b-instruct-q4_K_M` was not pulled; the test falls back to the first
+pulled model rather than failing CI.
 - **Non-goals this phase**: no interview start, no question generation/follow-ups, no session
-  persistence beyond what already exists, no MediaRecorder, no new screens, no ranking/reports/admin.
-  Phase 9 is the worker that will call this library inside `asyncio.to_thread`.
+persistence beyond what already exists, no MediaRecorder, no new screens, no ranking/reports/admin.
+Phase 9 (now complete) is the worker that calls this library inside `asyncio.to_thread`.
+
+
+
+### Phase 9 — interview engine (API + worker, no UI)
+
+- **Schema**: Alembic revision `c4e91f7a2d08` adds `interview_sessions.resume_id` (required FK to
+`resumes`, `ON DELETE RESTRICT`), plus on `answers`: `question_kind` (varchar `technical` |
+`behavioral`, not a Postgres ENUM), `is_follow_up` (boolean), and `evaluation` (JSON —
+`AnswerEvaluation` `{score, rationale, strengths, improvements}`). Unique
+`(session_id, question_order)`. Verified upgrade → downgrade → upgrade and `alembic check` clean.
+No new ENUM types. Job types stay plain strings.
+- `ml/interview/` (worker + tests; not called from request handlers):
+  - `followup.py` — `should_follow_up(evaluation, *, is_follow_up)` is True iff `score <= 2` **and**
+  the question is not already a follow-up. A non-empty `improvements` list does **not** spawn a
+  follow-up (score-4 answers often still have coaching notes). A follow-up is never chained.
+  - `prompts.py` — `build_generate_messages` / `build_followup_messages` return `{role, content}`
+  lists for `complete_json`. `rubric_name_for_kind` maps `technical` → `technical_answer` and
+  `behavioral` → `behavioral_answer` (the Phase 8 versioned files).
+- `ml/llm/schemas.py`: `InterviewQuestion` and `GeneratedQuestions` sit next to
+`AnswerEvaluation`. Generation goes through `LLMProvider.complete_json` — no prose parsing, no
+markdown-fence stripping, no score clamping.
+- **HTTP** (`app/routers/interviews.py`, prefix `/interviews`):
+  - `POST /interviews` (candidate-only, 201) — resume selection is the same 404/409 helper as
+  `GET /matches` (`app/services/resume_selection.py`). Optional `job_id` is an active posting
+  (404 missing, 409 inactive). Inserts `status=scheduled`, enqueues `interview_generate`, returns
+  `{session_id, async_job_id, status}`. Recruiter → 403. Unauthenticated → 401.
+  - `GET /interviews/{id}` — owner-only via `get_current_user`; missing or someone else's id is
+  **404 not 403**. Includes answers ordered by `question_order`.
+  - `POST /interviews/{session_id}/answers/{answer_id}` — text only (`audio_path` / `transcript`
+  stay null). Enqueues `interview_evaluate`. 409 if already submitted or session
+  completed/abandoned. Poll with existing `GET /jobs/{id}` / `useJobStatus` — no second poller.
+- **Workers** (`interview_generate`, `interview_evaluate`): `get_provider(config_from_settings( get_settings()))` inside the handler, wrapped in `asyncio.to_thread`. Never at FastAPI import
+time. Generate writes answers rows (`answer_text` null) and flips `scheduled → in_progress`.
+Evaluate writes `evaluation` JSON; if `should_follow_up`, generates **one** follow-up in the
+**same pass** (like `resume_parse` writing the embedding) and appends an `is_follow_up=True`
+answers row. Session becomes `completed` when every current question has `answer_text` and no
+follow-up was appended. `LLMJSONError` / `LLMSchemaError` / `LLMProviderError` fail the async
+job with a short error (generate also marks the session `abandoned`).
+- **Vite**: proxies `/interviews` next to `/auth`, `/health`, `/jobs`, `/resumes`, `/postings`,
+`/matches`. Interview sidebar item stays **disabled** (Phase 10 is the UI).
+- **Tests**: `backend/tests/test_ml_interview.py` (follow-up rule + prompts) and
+`backend/tests/test_interviews.py` (start+queue, fake-provider generate/evaluate/follow-up,
+owner-only 404s, recruiter 403, unauth 401, 409 not-parsed, 404 no-parsed-resume, LLM JSON
+failure, skippable live-Ollama generate+evaluate smoke). Workers monkeypatch
+`_build_interview_provider` so they never load MiniLM or hit Ollama except the one smoke.
+**96 passed** (72 prior + 24 new) against live Docker Postgres and Redis.
+- **Non-goals this phase**: no MediaRecorder, no audio upload, no Whisper/VAD/prosody, no new
+candidate/recruiter screens, no ranking/comparison/reports/admin, no WebSockets, no
+`ml/scoring` weights / `scores.composite_score`.
+
 
 
 ## Local dev setup
@@ -311,7 +361,7 @@ If another project already owns 8000/5173 (common on this machine), use **8001**
   ```
    CORS also allows the `127.0.0.1` twin of that origin. Do not drop that helper.
 2. Leave `frontend/.env` `VITE_API_BASE_URL` **empty** in local `npm run dev`. Vite proxies
-  `/auth`, `/health`, `/jobs`, `/resumes`, `/postings`, and `/matches` to `http://127.0.0.1:8001`.
+  `/auth`, `/health`, `/jobs`, `/resumes`, `/postings`, `/matches`, and `/interviews` to `http://127.0.0.1:8001`.
    Setting a cross-origin API URL reintroduces localhost vs 127.0.0.1 CORS traps.
 3. Start the processes with matching flags (restart both after changing env):
   ```bash
@@ -353,7 +403,7 @@ uv run alembic downgrade -1      # rolls back Phase 2's table migration cleanly
 uv run alembic upgrade head      # re-applies it; confirms no drift either direction
 uv run alembic check             # confirms models == live schema, no missing migration
 
-# Full test suite (health + auth + jobs + resumes + matching + ml.llm), against live Postgres and Redis
+# Full test suite (health + auth + jobs + resumes + matching + ml.llm + interviews), against live Postgres and Redis
 uv run pytest -q
 ```
 
@@ -496,6 +546,47 @@ curl -s "http://localhost:8000/matches?resume_id=<RESUME_ID>" -H "Authorization:
 doesn't belong to them), and 409 if a given `resume_id` exists and is owned but hasn't finished
 parsing yet. Swap `8000` for `8001` if that is the port you bound.
 
+### Backend — exercising the interview engine by hand
+
+Postgres, Redis, the API, the ARQ worker, **and** a reachable LLM (local Ollama by default) must
+all be running. You need a **candidate** with an already-`parsed` resume (see the resume
+walkthrough). A posting is optional.
+
+```bash
+# Start a session from your latest parsed resume (or pass "resume_id" / "job_id")
+curl -s -X POST http://localhost:8000/interviews \
+  -H "Authorization: Bearer <CANDIDATE_ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{}'
+# -> {"session_id": "...", "async_job_id": "...", "status": "scheduled"}
+
+# Poll generate progress (same GET /jobs/{id} as resume parse / posting embed)
+curl -s http://localhost:8000/jobs/<ASYNC_JOB_ID> \
+  -H "Authorization: Bearer <CANDIDATE_ACCESS_TOKEN>"
+
+# Once succeeded, read the session: questions are answers rows with answer_text null
+curl -s http://localhost:8000/interviews/<SESSION_ID> \
+  -H "Authorization: Bearer <CANDIDATE_ACCESS_TOKEN>"
+
+# Submit a text answer (audio_path/transcript stay null this phase)
+curl -s -X POST http://localhost:8000/interviews/<SESSION_ID>/answers/<ANSWER_ID> \
+  -H "Authorization: Bearer <CANDIDATE_ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"answer_text": "A mutable ordered sequence of objects."}'
+# -> {"answer_id": "...", "async_job_id": "...", "session_status": "in_progress"}
+
+# Poll the evaluate job, then GET the session again for score/rationale (and maybe one follow-up)
+curl -s http://localhost:8000/jobs/<EVAL_ASYNC_JOB_ID> \
+  -H "Authorization: Bearer <CANDIDATE_ACCESS_TOKEN>"
+curl -s http://localhost:8000/interviews/<SESSION_ID> \
+  -H "Authorization: Bearer <CANDIDATE_ACCESS_TOKEN>"
+```
+
+Follow-up rule: if the judge score is **0, 1, or 2** and the question was not itself a follow-up,
+the evaluate worker appends one more `answers` row in the **same** job. A score of 3+ never
+follow-ups, even if `improvements` is non-empty. Swap `8000` for `8001` if that is the port you
+bound. Recruiter `POST /interviews` is 403. GET of someone else's session id is 404.
+
 ### Frontend — lint, build, auth, and resume walkthrough
 
 The Vite+shadcn scaffold now has a real shell plus candidate resume upload/results. Backend, Postgres,
@@ -513,26 +604,29 @@ npm run dev      # pinned to http://localhost:5174 (strictPort)
 Manual UI checks (with `npm run dev` and the API on `:8001`):
 
 1. Open `http://localhost:5174` — you should be redirected to `/login` (not a 404; that 404 is only `GET /` on the API). Type that URL in a normal browser; a Cursor terminal link may remap 5174 to 5175.
-2. Click through to **Create one**, register a **candidate** (password ≥ 8 chars). You should land on `/candidate` with the sidebar showing Overview (live), **Resume** (live), and Interview (disabled, later phases).
+2. Click through to **Create one**, register a **candidate** (password ≥ 8 chars). You should land on `/candidate` with the sidebar showing Overview (live), **Resume** (live), **Matches** (live), and Interview (disabled — Phase 10).
 3. Sign out. Register a **recruiter**. You should land on `/recruiter`. Visiting `/candidate` as a recruiter should bounce you back to `/recruiter`. Recruiters have no Resume nav.
 4. Sign out, sign back in with the same account — session restore from localStorage (`aiip.auth.tokens`) should skip the forms.
 5. Reload the page while signed in — `/auth/me` should repopulate the shell. If the access JWT has expired, the client will rotate the opaque refresh token via `POST /auth/refresh` without a visible logout.
 6. A recruiter with `is_admin=true` (set in the database by an operator, never via register) shows a disabled **Admin** row. There is no admin dashboard in this phase.
-7. On `/candidate`, click **Run demo job** (API + Redis + worker must be up). Status should move queued → running → succeeded and show the echo text. Leave `frontend/.env` `VITE_API_BASE_URL` empty so `/jobs`, `/resumes`, `/postings`, and `/matches` stay same-origin through the Vite proxy.
+7. On `/candidate`, click **Run demo job** (API + Redis + worker must be up). Status should move queued → running → succeeded and show the echo text. Leave `frontend/.env` `VITE_API_BASE_URL` empty so `/jobs`, `/resumes`, `/postings`, `/matches`, and `/interviews` stay same-origin through the Vite proxy.
 8. Click **Resume** (or **Open resume upload**). Drop or pick a text-based PDF (≤ 10 MiB). A non-PDF should be rejected in the dropzone. After **Upload and parse**, you should land on the results page, see queued → running → succeeded, then sections, skill chips, and an ATS score. A PDF with no extractable text should show the failed job/resume states instead of a blank page.
 9. Sign out, sign in (or register) as a **recruiter**, open **Jobs** in the sidebar, and create a posting (title + description + optional comma-separated required skills). It should appear at the top of "Your postings" with an **Active** badge and an **Embedding…** badge; reload after a few seconds and the badge flips to **Embedded** once the worker finishes. Click **Deactivate** and confirm the badge flips to **Inactive**.
 10. Sign back in as the candidate whose resume you parsed in step 8, open **Matches** in the sidebar. You should see the posting from step 9 (if still active) with a similarity-score bar and skill chips split into "You have" (matched) and "Skill gap" (missing). A candidate with no parsed resume yet should see the "no parsed resume yet" empty state with a link back to `/candidate/resume` instead of an error.
 
 `GET /` on the API still 404s; use `/health` or `/docs` (and the port you actually bound).
 
-### ml/ — resume + matching + LLM provider are runnable; speech/scoring are still stubs
+### ml/ — resume + matching + LLM provider + interview engine; speech/scoring are still stubs
 
 `ml/resume/` (parsing, ESCO skill matching, ATS scoring), `ml/matching/` (SBERT embeddings,
-cosine similarity, skill-gap diff, TF-IDF baseline), and `ml/llm/` (Ollama / OpenAI-compatible
-provider, Pydantic JSON, versioned 0–5 rubrics) are implemented. Resume/matching are covered by
+cosine similarity, skill-gap diff, TF-IDF baseline), `ml/llm/` (Ollama / OpenAI-compatible
+provider, Pydantic JSON, versioned 0–5 rubrics, `GeneratedQuestions` / `InterviewQuestion`), and
+`ml/interview/` (follow-up rule + prompt builders) are implemented. Resume/matching are covered by
 `backend/tests/test_resumes.py`, `test_postings.py`, `test_matches.py` (via the workers), and
 `test_ml_matching.py`. The LLM library is covered by `backend/tests/test_ml_llm.py` (MockTransport
-plus a skippable live-Ollama smoke). `ml/{speech,scoring}/` are still empty package stubs.
+plus a skippable live-Ollama smoke). The interview engine is covered by `test_ml_interview.py` and
+`test_interviews.py` (fake provider + one skippable live generate+evaluate smoke).
+`ml/{speech,scoring}/` are still empty package stubs.
 
 You can also exercise `ml/resume`, `ml/matching`, and `ml/llm` directly, without the API/worker:
 
@@ -550,6 +644,8 @@ a, b = embed_texts(['Python backend engineer', 'Marine biologist'])
 print(cosine_similarity(a, b))
 "
 ```
+
+
 
 #### Pointing `ml/llm` at Ollama (local default)
 
@@ -589,9 +685,10 @@ finally:
 ```
 
 Do **not** call `get_provider()` from a FastAPI request handler or at app import time. Phase 9's
-ARQ worker will wrap `evaluate_answer` in `asyncio.to_thread`, the same way `resume_parse` wraps
-`ml.resume`. The live pytest smoke (`test_live_ollama_evaluate_answer_smoke`) skips if Ollama is
-down or has no models pulled — it never fails CI/offline.
+ARQ worker wraps `complete_json` / `evaluate_answer` in `asyncio.to_thread`, the same way
+`resume_parse` wraps `ml.resume`. The live pytest smokes (`test_live_ollama_evaluate_answer_smoke`
+and `test_live_ollama_generate_and_evaluate_smoke`) skip if Ollama is down or has no models
+pulled — they never fail CI/offline.
 
 #### Swapping to an OpenAI-compatible server
 
@@ -616,8 +713,6 @@ Schema enforcement is identical for both backends: `complete_json` JSON-decodes 
 validates it with Pydantic. A score outside 0–5 or missing `rationale` is `LLMSchemaError`, not a
 clamped value.
 
-
-
 ### CI
 
 Every push/PR runs `.github/workflows/ci.yml`:
@@ -635,4 +730,4 @@ cd "/home/sam/projects/Project-2 MLIS/ai-interview-platform" && \
   uv sync && docker compose up -d && uv run alembic upgrade head && uv run pytest -q
 ```
 
-Worker (separate process, repo root): `uv run arq app.workers.settings.WorkerSettings`. SPA: `cd frontend && npm install && npm run dev` (leave `VITE_API_BASE_URL` empty so `/auth`, `/health`, `/jobs`, `/resumes`, `/postings`, and `/matches` stay same-origin via the Vite proxy).
+Worker (separate process, repo root): `uv run arq app.workers.settings.WorkerSettings`. SPA: `cd frontend && npm install && npm run dev` (leave `VITE_API_BASE_URL` empty so `/auth`, `/health`, `/jobs`, `/resumes`, `/postings`, `/matches`, and `/interviews` stay same-origin via the Vite proxy).

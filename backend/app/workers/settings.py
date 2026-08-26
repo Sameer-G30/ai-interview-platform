@@ -3,7 +3,14 @@
 from arq.worker import Worker, func  # Worker for in-process burst tests; func() sets per-task max_tries
 
 from app.core.redis import get_redis_settings  # same REDIS_URL the API uses
-from app.workers.tasks import demo_echo, demo_fail, posting_embed, resume_parse  # demo + resume/posting ML tasks
+from app.workers.tasks import (  # demo + resume/posting ML + interview generate/evaluate
+    demo_echo,
+    demo_fail,
+    interview_evaluate,
+    interview_generate,
+    posting_embed,
+    resume_parse,
+)
 
 
 async def startup(ctx: dict) -> None:
@@ -33,6 +40,10 @@ class WorkerSettings:
         # Embedding one posting's title+description+required_skills text is a single small SBERT
         # encode call; 60s matches resume_parse's cap even though it typically finishes in well under 1s.
         func(posting_embed, name="posting_embed", max_tries=1, timeout=60),
+        # LLM generate/evaluate: httpx read timeout is 120s; evaluate may do a second complete_json for
+        # a follow-up in the same pass. 300s cap is the 8GB-card cold-load budget, not a keep_alive tweak.
+        func(interview_generate, name="interview_generate", max_tries=1, timeout=180),
+        func(interview_evaluate, name="interview_evaluate", max_tries=1, timeout=300),
     ]
     redis_settings = get_redis_settings()  # parsed once at import from REDIS_URL / Settings
     on_startup = startup  # called when the worker process (or burst Worker) starts

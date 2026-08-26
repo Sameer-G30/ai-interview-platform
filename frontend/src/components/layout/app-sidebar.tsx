@@ -34,7 +34,7 @@ const candidateNav: NavItem[] = [
   { title: "Overview", href: "/candidate", icon: LayoutDashboardIcon }, // live placeholder home
   { title: "Resume", href: "/candidate/resume", icon: FileTextIcon }, // Phase 6 upload + parsed results
   { title: "Matches", href: "/candidate/matches", icon: BriefcaseIcon }, // Phase 7 ranked postings + skill gap
-  { title: "Interview", icon: MicIcon, disabled: true }, // Phase 8/9
+  { title: "Interview", icon: MicIcon, disabled: true }, // Phase 10 UI; Phase 9 is API/worker only
 ]
 
 // Recruiter nav: overview/jobs are live; candidates/admin are later phases.

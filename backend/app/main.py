@@ -13,7 +13,7 @@ import app.models  # noqa: F401 - import side-effect registers every ORM model o
 from app.core.config import get_settings  # cached, typed Settings object read from env/.env
 from app.core.rate_limit import limiter  # shared Limiter instance, also imported by app.routers.auth
 from app.core.redis import close_arq_pool, create_arq_pool  # ARQ Redis pool used to enqueue jobs
-from app.routers import auth, health, jobs, matches, postings, resumes  # every mounted router
+from app.routers import auth, health, interviews, jobs, matches, postings, resumes  # every mounted router
 
 
 @asynccontextmanager
@@ -66,3 +66,5 @@ app.include_router(resumes.router)
 app.include_router(postings.router)
 # Mount the job-matching matches router; candidate-only ranked postings for a parsed resume.
 app.include_router(matches.router)
+# Mount the interview-engine router; candidate-only session start/submit, owner-only GET.
+app.include_router(interviews.router)

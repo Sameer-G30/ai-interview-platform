@@ -5,7 +5,12 @@ Keeping the schemas here — not inside a backend file — means bumping a field
 Ollama vs OpenAI-compatible HTTP payloads.
 """
 
+from typing import Literal  # question_kind is a closed set so complete_json cannot invent a third rubric
+
 from pydantic import BaseModel, Field  # Field carries 0-5 bounds and descriptions that flow into JSON Schema
+
+# Stored on answers.question_kind and used to pick technical_answer_v1 vs behavioral_answer_v1.
+QuestionKind = Literal["technical", "behavioral"]  # closed set; anything else is LLMSchemaError
 
 
 class AnswerEvaluation(BaseModel):
@@ -30,4 +35,35 @@ class AnswerEvaluation(BaseModel):
     )
     improvements: list[str] = Field(  # required list; empty is allowed for a perfect 5
         description="Concrete gaps or next steps; empty list when the answer already meets the top of the rubric.",
+    )
+
+
+class InterviewQuestion(BaseModel):
+    """One interview question produced by `complete_json` (initial generate or a single follow-up).
+
+    `question_kind` selects the versioned rubric file at evaluation time. It is a schema field, not
+    something parsed out of the question prose.
+    """
+
+    question_text: str = Field(  # the candidate-facing prompt; stored on answers.question_text
+        min_length=1,  # empty string is a schema failure so the model cannot skip the question
+        description="The question to ask the candidate, as plain text with no markdown fences.",
+    )
+    question_kind: QuestionKind = Field(  # closed literal; unknown strings are LLMSchemaError
+        default="technical",  # omitted kind is still valid JSON; evaluate then uses technical_answer_v1
+        description="Which 0-5 rubric to use when scoring the answer: technical or behavioral.",
+    )
+
+
+class GeneratedQuestions(BaseModel):
+    """Question-generation payload: a short list of `InterviewQuestion` items in display order.
+
+    `min_length=1` so an empty list is a schema failure (not a silent 'no questions' session).
+    `max_length=6` caps a runaway model so a session cannot be stuffed with dozens of rows.
+    """
+
+    questions: list[InterviewQuestion] = Field(  # 1-6 items; the worker persists them as answers rows
+        min_length=1,  # at least one question or the generate job fails
+        max_length=6,  # hard cap; the prompt asks for 4, this is the safety bound
+        description="Interview questions for this session, in the order they should be asked.",
     )

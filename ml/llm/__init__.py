@@ -1,7 +1,7 @@
 """Pluggable LLM provider: Ollama (local default) and OpenAI-compatible HTTP, with Pydantic JSON output.
 
-This package is the library. Phase 9 (interview-engine) is the ARQ worker that will call it inside
-`asyncio.to_thread`. Do not import `get_provider()` from FastAPI request handlers or at app import time —
+This package is the library. Phase 9's ARQ worker calls it inside `asyncio.to_thread`.
+Do not import `get_provider()` from FastAPI request handlers or at app import time —
 the judge model must not be loaded in the API process (8GB VRAM budget).
 """
 
@@ -23,10 +23,12 @@ from ml.llm.provider import (
     parse_structured,
 )
 from ml.llm.rubrics import list_rubrics, load_rubric  # versioned 0-5 rubric markdown files
-from ml.llm.schemas import AnswerEvaluation  # structured judge output (score 0-5 + rationale)
+from ml.llm.schemas import AnswerEvaluation, GeneratedQuestions, InterviewQuestion  # structured JSON outputs
 
 __all__ = [  # public surface the worker and research harness should import from `ml.llm`
     "AnswerEvaluation",  # Pydantic judge schema
+    "GeneratedQuestions",  # question-generation list schema (Phase 9 worker)
+    "InterviewQuestion",  # one generated or follow-up question + rubric kind
     "LLMConfig",  # provider selection + connection settings
     "LLMError",  # base error
     "LLMJSONError",  # invalid JSON from the model
