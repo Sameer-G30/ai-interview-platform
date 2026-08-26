@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     # --- Rate limiting (slowapi) ---
     rate_limit_default: str = "100/minute"          # default slowapi limit string applied to auth routes
 
+    # --- LLM provider (ml/llm; Phase 9 worker will read these — the API process must not call get_provider()) ---
+    llm_provider: str = "ollama"                    # ollama | openai_compat; factory rejects anything else at call time
+    ollama_base_url: str = "http://localhost:11434"  # local Ollama daemon origin inside WSL2
+    ollama_model: str = "llama3.1:8b-instruct-q4_K_M"  # quantized instruct tag sized for 8GB VRAM; must be pulled
+    openai_compat_base_url: str = "https://api.openai.com/v1"  # OpenAI-compatible origin; include /v1
+    openai_compat_api_key: str = ""                 # Bearer token; blank when using Ollama or a keyless local server
+    openai_compat_model: str = "gpt-4o-mini"        # model id sent to the OpenAI-compatible server
+
 
     def cors_allow_origins(self) -> list[str]:
         """Origins Starlette may echo back. `localhost` and `127.0.0.1` are different origins."""

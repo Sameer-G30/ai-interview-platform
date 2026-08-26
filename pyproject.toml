@@ -29,6 +29,7 @@ dependencies = [
     "sentence-transformers>=3.0,<4",             # loads all-MiniLM-L6-v2 to embed resume/posting text into 384-d vectors
     "scikit-learn>=1.5,<2",                     # TfidfVectorizer + cosine_similarity, the baseline matching arm
     "pgvector>=0.3,<0.4",                       # SQLAlchemy Vector column type + numpy adapter for Postgres pgvector
+    "httpx>=0.27,<0.28",                        # HTTP client for ml.llm Ollama + OpenAI-compatible backends (also pytest)
 ]
 
 [dependency-groups]

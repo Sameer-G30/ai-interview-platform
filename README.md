@@ -1,6 +1,6 @@
 # AI Interview Intelligence Platform
 
-Status: **Phase 7 of 15 complete (job-matching)**. Full architecture diagram, seed/demo scripts, and
+Status: **Phase 8 of 15 complete (llm-provider)**. Full architecture diagram, seed/demo scripts, and
 deployment profile land in the hardening phase per the build plan.
 
 ## What this is
@@ -220,6 +220,40 @@ skill chips) verified on both a desktop and a mobile viewport.
 
 
 
+### Phase 8 — LLM provider (library only)
+
+- `ml/llm/` (shared by a later interview worker and the research harness; **not** called from FastAPI
+  request handlers this phase):
+  - `provider.py` — `LLMConfig`, `get_provider()`, `LLMProvider.complete_json()`, `evaluate_answer()`.
+  The product and a research harness call this one facade. Invalid JSON and schema failures are
+  `LLMJSONError` / `LLMSchemaError` — never a silent fallback to free text, and markdown fences are
+  not stripped.
+  - `ollama.py` — `OllamaBackend`: lazy `httpx.Client`, `POST /api/chat` with `stream=false`,
+  `format=<JSON Schema>`, `keep_alive=0` (unload after the call so an 8GB GPU is not holding the
+  judge for Whisper).
+  - `openai_compat.py` — `OpenAICompatBackend`: same lazy client, `POST /chat/completions` with
+  `response_format: {type: json_object}` (widely supported; many clones 400 on `json_schema`).
+  Empty `OPENAI_COMPAT_API_KEY` is allowed for keyless local servers.
+  - `schemas.py` — `AnswerEvaluation` (integer `score` 0–5, `rationale`, `strengths`, `improvements`).
+  - `rubrics/` — versioned markdown files (`technical_answer_v1.md`, `behavioral_answer_v1.md`).
+  Bumping a rubric is a new file; backends never hardcode the 0–5 wording.
+- **Settings**: `LLM_PROVIDER`, `OLLAMA_*`, `OPENAI_COMPAT_*` from `.env.example` are real
+  `Settings` fields. Product code should map them with `config_from_settings(get_settings())` —
+  pydantic-settings does **not** copy `.env` into `os.environ`. No new Alembic migration (provider
+  config is not a table).
+- **httpx** is now a main dependency (was test-only). It does not pull numpy 2.x; the spaCy pin
+  `numpy>=1.24,<2` stays authoritative (`1.26.4` verified after `uv lock`).
+- **Tests**: `backend/tests/test_ml_llm.py` — schema enforcement, factory selection, MockTransport
+  HTTP for both backends, rubric loading, and one live-Ollama smoke that `pytest.skip()`s if the
+  daemon is down or has no models. **72 passed** (53 prior + 19 new) against live Docker Postgres
+  and Redis. The live smoke on this machine used an already-pulled tag (`llama3.2:latest`) because
+  `.env.example`'s `llama3.1:8b-instruct-q4_K_M` was not pulled; the test falls back to the first
+  pulled model rather than failing CI.
+- **Non-goals this phase**: no interview start, no question generation/follow-ups, no session
+  persistence beyond what already exists, no MediaRecorder, no new screens, no ranking/reports/admin.
+  Phase 9 is the worker that will call this library inside `asyncio.to_thread`.
+
+
 ## Local dev setup
 
 ```bash
@@ -319,7 +353,7 @@ uv run alembic downgrade -1      # rolls back Phase 2's table migration cleanly
 uv run alembic upgrade head      # re-applies it; confirms no drift either direction
 uv run alembic check             # confirms models == live schema, no missing migration
 
-# Full test suite (health + auth + job queue), against live Postgres and Redis
+# Full test suite (health + auth + jobs + resumes + matching + ml.llm), against live Postgres and Redis
 uv run pytest -q
 ```
 
@@ -491,16 +525,16 @@ Manual UI checks (with `npm run dev` and the API on `:8001`):
 
 `GET /` on the API still 404s; use `/health` or `/docs` (and the port you actually bound).
 
-### ml/ — resume + matching pipelines are runnable; llm/speech/scoring are still stubs
+### ml/ — resume + matching + LLM provider are runnable; speech/scoring are still stubs
 
-`ml/resume/` (parsing, ESCO skill matching, ATS scoring) and `ml/matching/` (SBERT embeddings,
-cosine similarity, skill-gap diff, TF-IDF baseline) are implemented and covered end to end by
-`backend/tests/test_resumes.py`, `backend/tests/test_postings.py`, `backend/tests/test_matches.py`
-(via the workers), and `backend/tests/test_ml_matching.py` (direct unit tests). `ml/{llm,speech,scoring}/`
-are still empty package stubs; there is no ML code to test there until the llm-provider and
-speech-pipeline phases land.
+`ml/resume/` (parsing, ESCO skill matching, ATS scoring), `ml/matching/` (SBERT embeddings,
+cosine similarity, skill-gap diff, TF-IDF baseline), and `ml/llm/` (Ollama / OpenAI-compatible
+provider, Pydantic JSON, versioned 0–5 rubrics) are implemented. Resume/matching are covered by
+`backend/tests/test_resumes.py`, `test_postings.py`, `test_matches.py` (via the workers), and
+`test_ml_matching.py`. The LLM library is covered by `backend/tests/test_ml_llm.py` (MockTransport
+plus a skippable live-Ollama smoke). `ml/{speech,scoring}/` are still empty package stubs.
 
-You can also exercise `ml/resume` and `ml/matching` directly, without the API/worker, for quick iteration:
+You can also exercise `ml/resume`, `ml/matching`, and `ml/llm` directly, without the API/worker:
 
 ```bash
 uv run python -c "
@@ -516,6 +550,71 @@ a, b = embed_texts(['Python backend engineer', 'Marine biologist'])
 print(cosine_similarity(a, b))
 "
 ```
+
+#### Pointing `ml/llm` at Ollama (local default)
+
+Install and run [Ollama](https://ollama.com/) in WSL2, then pull a Q4 instruct tag that fits 8GB VRAM:
+
+```bash
+ollama pull llama3.1:8b-instruct-q4_K_M
+```
+
+If you already have a smaller tag pulled (this machine had `llama3.2:latest`), set that in `.env`
+instead of downloading an 8B model:
+
+```env
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.2:latest
+```
+
+`Settings` reads those keys from `.env`. Construct the provider from Settings (not `os.environ`):
+
+```bash
+uv run python -c "
+from app.core.config import Settings
+from ml.llm import config_from_settings, evaluate_answer, get_provider
+
+provider = get_provider(config_from_settings(Settings()))
+try:
+    result = evaluate_answer(
+        'What is a Python list?',
+        'A mutable ordered sequence of objects.',
+        provider=provider,
+    )
+    print(result.score, result.rationale)
+finally:
+    provider.close()
+"
+```
+
+Do **not** call `get_provider()` from a FastAPI request handler or at app import time. Phase 9's
+ARQ worker will wrap `evaluate_answer` in `asyncio.to_thread`, the same way `resume_parse` wraps
+`ml.resume`. The live pytest smoke (`test_live_ollama_evaluate_answer_smoke`) skips if Ollama is
+down or has no models pulled — it never fails CI/offline.
+
+#### Swapping to an OpenAI-compatible server
+
+```env
+LLM_PROVIDER=openai_compat
+OPENAI_COMPAT_BASE_URL=https://api.openai.com/v1
+OPENAI_COMPAT_API_KEY=sk-...
+OPENAI_COMPAT_MODEL=gpt-4o-mini
+```
+
+`OPENAI_COMPAT_BASE_URL` must include `/v1` for OpenAI. To point the same backend at Ollama's
+compatibility surface (no API key):
+
+```env
+LLM_PROVIDER=openai_compat
+OPENAI_COMPAT_BASE_URL=http://localhost:11434/v1
+OPENAI_COMPAT_API_KEY=
+OPENAI_COMPAT_MODEL=llama3.2:latest
+```
+
+Schema enforcement is identical for both backends: `complete_json` JSON-decodes the reply and
+validates it with Pydantic. A score outside 0–5 or missing `rationale` is `LLMSchemaError`, not a
+clamped value.
 
 
 
