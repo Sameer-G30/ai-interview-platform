@@ -6,7 +6,9 @@ import { RequireRole } from "@/components/auth/require-role" // candidate cannot
 import { RoleLanding } from "@/components/auth/role-landing" // `/` -> login or role home
 import { AppShell } from "@/components/layout/app-shell" // sidebar + header around authenticated pages
 import { CandidateHomePage } from "@/pages/candidate-home-page" // candidate landing
-import { CandidateMatchesPage } from "@/pages/candidate-matches-page" // ranked postings + skill gap
+import { CandidateInterviewSessionPage } from "@/pages/candidate-interview-session-page" // poll generate, answer, poll evaluate
+import { CandidateInterviewStartPage } from "@/pages/candidate-interview-start-page" // practice start (POST /interviews {})
+import { CandidateMatchesPage } from "@/pages/candidate-matches-page" // ranked postings + skill gap + start interview
 import { CandidateResumeResultsPage } from "@/pages/candidate-resume-results-page" // parsed ATS / skills / sections
 import { CandidateResumeUploadPage } from "@/pages/candidate-resume-upload-page" // drag-drop PDF upload
 import { LoginPage } from "@/pages/login-page" // POST /auth/login form
@@ -63,6 +65,22 @@ export const router = createBrowserRouter([
             element: (
               <RequireRole role="candidate">
                 <CandidateMatchesPage />
+              </RequireRole>
+            ),
+          },
+          {
+            path: "/candidate/interview",
+            element: (
+              <RequireRole role="candidate">
+                <CandidateInterviewStartPage />
+              </RequireRole>
+            ),
+          },
+          {
+            path: "/candidate/interview/:sessionId",
+            element: (
+              <RequireRole role="candidate">
+                <CandidateInterviewSessionPage />
               </RequireRole>
             ),
           },

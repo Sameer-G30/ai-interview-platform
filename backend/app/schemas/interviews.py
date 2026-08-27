@@ -4,7 +4,7 @@ import uuid  # session ids, answer ids, async job ids, resume/posting ids
 from datetime import datetime  # created_at / updated_at / started_at / completed_at
 from typing import Any  # evaluation JSON matches AnswerEvaluation but is stored as a dict
 
-from pydantic import BaseModel, Field  # request/response models + min_length on answer_text
+from pydantic import BaseModel, Field, computed_field  # request/response models + derived has_audio
 
 from app.models.enums import InterviewSessionStatus  # scheduled / in_progress / completed / abandoned
 
@@ -38,6 +38,14 @@ class AnswerOut(BaseModel):
     evaluation: dict[str, Any] | None  # {score, rationale, strengths, improvements} once judged
     created_at: datetime  # row insert time (question generated or follow-up appended)
     updated_at: datetime  # last write (submit / evaluation)
+    # Loaded from the ORM so has_audio can be derived; never serialized (do not leak storage_root paths).
+    audio_path: str | None = Field(default=None, exclude=True)
+
+    @computed_field  # JSON key has_audio; mirrors PostingOut.has_embedding rather than exposing the blob path
+    @property
+    def has_audio(self) -> bool:
+        """True once a Phase 10 MediaRecorder upload wrote answers.audio_path; transcript stays null until Phase 11."""
+        return self.audio_path is not None and len(self.audio_path) > 0
 
 
 class InterviewSessionOut(BaseModel):
@@ -68,3 +76,10 @@ class AnswerSubmitOut(BaseModel):
     answer_id: uuid.UUID  # the row whose evaluation the client will read after polling
     async_job_id: uuid.UUID  # poll via GET /jobs/{id}; same useJobStatus hook as resume/parse
     session_status: InterviewSessionStatus  # still in_progress until the worker completes the session
+
+
+class AudioUploadOut(BaseModel):
+    """Returned by `POST /interviews/{session_id}/answers/{answer_id}/audio` after the blob is on disk."""
+
+    answer_id: uuid.UUID  # the row whose audio_path was written
+    has_audio: bool  # always True on success; the SPA uses this instead of the filesystem path

@@ -13,11 +13,17 @@ export function CandidateHomePage() {
       <div className="flex flex-col gap-3">
         <h1 className="text-2xl font-semibold">Candidate home</h1>
         <p className="text-muted-foreground">
-          Signed in as {user?.email}. Upload a PDF resume to parse skills and an ATS score. Interviews come later.
+          Signed in as {user?.email}. Upload a PDF resume, review Matches, then start a practice interview or one
+          against a posting.
         </p>
-        <Button type="button" variant="outline" asChild>
-          <Link to="/candidate/resume">Open resume upload</Link>
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="outline" asChild>
+            <Link to="/candidate/resume">Open resume upload</Link>
+          </Button>
+          <Button type="button" variant="outline" asChild>
+            <Link to="/candidate/interview">Open interview</Link>
+          </Button>
+        </div>
       </div>
       <JobQueueDemo />
     </div>

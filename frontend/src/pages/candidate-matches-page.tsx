@@ -1,10 +1,12 @@
-import { useQuery } from "@tanstack/react-query" // GET /matches, no resume_id — implicit latest-parsed-resume
-import { Link } from "react-router-dom" // link to the upload page from the empty state
+import { useMutation, useQuery } from "@tanstack/react-query" // GET /matches + POST /interviews from a card
+import { useState } from "react" // per-card start error
+import { Link, useNavigate } from "react-router-dom" // upload CTA; session URL after 201
 
+import { interviewSessionPath, startInterview } from "@/api/interviews" // start with this posting's job_id
 import { fetchMatches, matchQueryKeys } from "@/api/matches" // typed /matches client
 import { ApiError } from "@/api/types" // status-based branching (404 = no parsed resume yet)
 import type { MatchOut } from "@/api/types" // one ranked posting
-import { Button } from "@/components/ui/button" // link to the resume upload page
+import { Button } from "@/components/ui/button" // link to the resume upload page + start interview
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card" // page chrome
 import { Skeleton } from "@/components/ui/skeleton" // loading placeholder
 
@@ -28,9 +30,26 @@ function SkillChipList({ skills, variant }: { skills: string[]; variant: "matche
   )
 }
 
-// One ranked posting card: title, similarity score, then matched/missing skill chip rows.
-function MatchCard({ match }: { match: MatchOut }) {
+// One ranked posting card: title, similarity score, matched/missing skill chips, Start interview action.
+function MatchCard({ match, resumeId }: { match: MatchOut; resumeId: string }) {
+  const navigate = useNavigate() // after 201, keep session_id + async_job_id in the URL like resume results
+  const [error, setError] = useState<string | null>(null) // 409 inactive posting / network
   const percent = Math.round(Math.max(0, Math.min(1, match.score)) * 100) // clamp: cosine sim can dip below 0
+
+  const start = useMutation({
+    mutationFn: () => startInterview({ resume_id: resumeId, job_id: match.posting_id }), // posting-targeted session
+    onSuccess: (body) => {
+      navigate(interviewSessionPath(body.session_id, body.async_job_id)) // poll generate, then GET session
+    },
+    onError: (caught) => {
+      if (caught instanceof ApiError) {
+        setError(caught.detail) // 409 inactive, 404 posting, 429
+        return // stay on Matches
+      }
+      setError("could not start an interview — is the API running?") // network
+    },
+  })
+
   return (
     <Card size="sm">
       <CardHeader>
@@ -56,6 +75,23 @@ function MatchCard({ match }: { match: MatchOut }) {
         {match.matched_skills.length === 0 && match.missing_skills.length === 0 ? (
           <p className="text-xs text-muted-foreground">This posting listed no required skills.</p>
         ) : null}
+        {error !== null ? (
+          <p className="text-xs text-destructive" role="alert">
+            {error}
+          </p>
+        ) : null}
+        <Button
+          type="button"
+          size="sm"
+          disabled={start.isPending}
+          data-testid={`start-interview-${match.posting_id}`}
+          onClick={() => {
+            setError(null) // clear a previous API error before retrying
+            start.mutate() // POST /interviews { resume_id, job_id }
+          }}
+        >
+          {start.isPending ? "Starting…" : "Start interview"}
+        </Button>
       </CardContent>
     </Card>
   )
@@ -115,7 +151,7 @@ export function CandidateMatchesPage() {
         ) : (
           <div className="flex flex-col gap-4">
             {matchesQuery.data.matches.map((match) => (
-              <MatchCard key={match.posting_id} match={match} />
+              <MatchCard key={match.posting_id} match={match} resumeId={matchesQuery.data.resume_id} />
             ))}
           </div>
         )

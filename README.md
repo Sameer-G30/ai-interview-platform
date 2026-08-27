@@ -1,6 +1,6 @@
 # AI Interview Intelligence Platform
 
-Status: **Phase 9 of 15 complete (interview-engine)**. Full architecture diagram, seed/demo scripts, and
+Status: **Phase 10 of 15 complete (frontend-interview)**. Full architecture diagram, seed/demo scripts, and
 deployment profile land in the hardening phase per the build plan.
 
 ## What this is
@@ -291,16 +291,52 @@ answers row. Session becomes `completed` when every current question has `answer
 follow-up was appended. `LLMJSONError` / `LLMSchemaError` / `LLMProviderError` fail the async
 job with a short error (generate also marks the session `abandoned`).
 - **Vite**: proxies `/interviews` next to `/auth`, `/health`, `/jobs`, `/resumes`, `/postings`,
-`/matches`. Interview sidebar item stays **disabled** (Phase 10 is the UI).
+`/matches`. Interview sidebar item stayed **disabled** in this phase; Phase 10 enables the UI.
 - **Tests**: `backend/tests/test_ml_interview.py` (follow-up rule + prompts) and
 `backend/tests/test_interviews.py` (start+queue, fake-provider generate/evaluate/follow-up,
 owner-only 404s, recruiter 403, unauth 401, 409 not-parsed, 404 no-parsed-resume, LLM JSON
 failure, skippable live-Ollama generate+evaluate smoke). Workers monkeypatch
 `_build_interview_provider` so they never load MiniLM or hit Ollama except the one smoke.
-**96 passed** (72 prior + 24 new) against live Docker Postgres and Redis.
+**96 passed** at the end of Phase 9 (72 prior + 24 new) against live Docker Postgres and Redis.
 - **Non-goals this phase**: no MediaRecorder, no audio upload, no Whisper/VAD/prosody, no new
 candidate/recruiter screens, no ranking/comparison/reports/admin, no WebSockets, no
 `ml/scoring` weights / `scores.composite_score`.
+
+
+
+### Phase 10 — candidate interview UI (on the live Phase 9 API)
+
+- **Nav**: candidate **Interview** is enabled (`/candidate/interview`). Overview, Resume, Matches,
+the `/candidate` queue demo, and recruiter **Jobs** stay. Recruiters do not get an Interview
+screen (`RequireRole candidate`). There is still no `GET /interviews` list.
+- **Start**: practice `POST /interviews` with `{}` (latest parsed resume, no posting). Matches
+cards keep the existing skill-gap UI and add **Start interview**, which POSTs `{ resume_id, job_id }`
+using that posting's id. After `201`, the SPA navigates to
+`/candidate/interview/:sessionId?job=:asyncJobId` (same pattern as resume results).
+- **Session screen**: polls `GET /jobs/{id}` with the existing `useJobStatus` hook until generate
+succeeds/fails, then one `GET /interviews/{id}`. Does **not** loop on GET /interviews while
+generate is queued. Shows queued / running / failed. Generate failure (session `abandoned`) is
+an explicit empty state. Question navigation is by `question_order`. Text submit is
+`POST /interviews/{session_id}/answers/{answer_id}` `{ answer_text }`, then the same poller on
+the evaluate job (`?eval=`), then a session refetch for `{score, rationale, strengths, improvements}`
+and any new follow-up row (score ≤ 2, not already a follow-up). Handles 404 no parsed resume,
+409 not-yet-parsed, already-submitted 409, and completed sessions.
+- **Audio**: Chromium `MediaRecorder` (`audio/webm;codecs=opus`), permission handling,
+waveform + level meter, upload with progress, retry/overwrite. **Not** a second scoring path —
+text submit still enqueues `interview_evaluate`. `POST /interviews/{session_id}/answers/{answer_id}/audio`
+(multipart field `file`, 10 MiB, webm only) writes `answers.audio_path` under `storage_root`
+and leaves `transcript` null. GET session exposes `has_audio` (derived); the filesystem path is
+not in JSON. Safari is not supported. No Whisper/VAD/prosody (Phase 11).
+- **Typed client**: `frontend/src/api/interviews.ts` + snake_case types. JSON through `apiFetch`;
+multipart through `apiUpload`.
+- **No new Alembic revision** — `audio_path` already existed. `alembic check` reports no drift.
+- **Tests**: five new audio-upload cases (owner-only 404, recruiter 403, unauthenticated 401,
+wrong type / oversize 400, success leaves transcript null) on `test_interviews.py` with
+`redis_pool` attached. **101 passed** (96 prior + 5 new) against live Docker Postgres and Redis.
+Frontend `npm run lint` (existing shadcn oxlint warnings only) and `npm run build`.
+- **Non-goals this phase**: no Whisper/VAD/parselmouth, no transcript viewer, no fluency cards,
+no `ml/scoring` weights, no ranking/comparison/reports/admin, no WebSockets, no recruiter
+interview dashboard.
 
 
 
@@ -403,7 +439,7 @@ uv run alembic downgrade -1      # rolls back Phase 2's table migration cleanly
 uv run alembic upgrade head      # re-applies it; confirms no drift either direction
 uv run alembic check             # confirms models == live schema, no missing migration
 
-# Full test suite (health + auth + jobs + resumes + matching + ml.llm + interviews), against live Postgres and Redis
+# Full test suite (health + auth + jobs + resumes + matching + ml.llm + interviews + audio upload), against live Postgres and Redis
 uv run pytest -q
 ```
 
@@ -587,12 +623,21 @@ the evaluate worker appends one more `answers` row in the **same** job. A score 
 follow-ups, even if `improvements` is non-empty. Swap `8000` for `8001` if that is the port you
 bound. Recruiter `POST /interviews` is 403. GET of someone else's session id is 404.
 
-### Frontend — lint, build, auth, and resume walkthrough
+Optional Phase 10 audio blob (does **not** enqueue evaluate; `transcript` stays null):
 
-The Vite+shadcn scaffold now has a real shell plus candidate resume upload/results. Backend, Postgres,
-Redis, and the ARQ worker must be up for login/register, the demo job, and resume parsing. CORS allows
-`FRONTEND_ORIGIN` and its `127.0.0.1` twin (this machine: `http://localhost:5174`). See **Ports, CORS,
-and sharing the machine with another app** above.
+```bash
+curl -s -X POST http://localhost:8000/interviews/<SESSION_ID>/answers/<ANSWER_ID>/audio \
+  -H "Authorization: Bearer <CANDIDATE_ACCESS_TOKEN>" \
+  -F "file=@/tmp/answer.webm;type=audio/webm"
+```
+
+### Frontend — lint, build, auth, resume, matches, and interview walkthrough
+
+The Vite+shadcn scaffold has the shell, candidate resume upload/results, Matches, recruiter Jobs,
+and the candidate interview session (text + optional MediaRecorder). Backend, Postgres, Redis, the
+ARQ worker, and a reachable LLM (local Ollama by default) must be up for the interview steps. CORS
+allows `FRONTEND_ORIGIN` and its `127.0.0.1` twin (this machine: `http://localhost:5174`). See
+**Ports, CORS, and sharing the machine with another app** above.
 
 ```bash
 cd "Project-2 MLIS/ai-interview-platform/frontend"
@@ -604,7 +649,7 @@ npm run dev      # pinned to http://localhost:5174 (strictPort)
 Manual UI checks (with `npm run dev` and the API on `:8001`):
 
 1. Open `http://localhost:5174` — you should be redirected to `/login` (not a 404; that 404 is only `GET /` on the API). Type that URL in a normal browser; a Cursor terminal link may remap 5174 to 5175.
-2. Click through to **Create one**, register a **candidate** (password ≥ 8 chars). You should land on `/candidate` with the sidebar showing Overview (live), **Resume** (live), **Matches** (live), and Interview (disabled — Phase 10).
+2. Click through to **Create one**, register a **candidate** (password ≥ 8 chars). You should land on `/candidate` with the sidebar showing Overview, **Resume**, **Matches**, and **Interview** (all live). Recruiters still have no Interview nav.
 3. Sign out. Register a **recruiter**. You should land on `/recruiter`. Visiting `/candidate` as a recruiter should bounce you back to `/recruiter`. Recruiters have no Resume nav.
 4. Sign out, sign back in with the same account — session restore from localStorage (`aiip.auth.tokens`) should skip the forms.
 5. Reload the page while signed in — `/auth/me` should repopulate the shell. If the access JWT has expired, the client will rotate the opaque refresh token via `POST /auth/refresh` without a visible logout.
@@ -613,6 +658,9 @@ Manual UI checks (with `npm run dev` and the API on `:8001`):
 8. Click **Resume** (or **Open resume upload**). Drop or pick a text-based PDF (≤ 10 MiB). A non-PDF should be rejected in the dropzone. After **Upload and parse**, you should land on the results page, see queued → running → succeeded, then sections, skill chips, and an ATS score. A PDF with no extractable text should show the failed job/resume states instead of a blank page.
 9. Sign out, sign in (or register) as a **recruiter**, open **Jobs** in the sidebar, and create a posting (title + description + optional comma-separated required skills). It should appear at the top of "Your postings" with an **Active** badge and an **Embedding…** badge; reload after a few seconds and the badge flips to **Embedded** once the worker finishes. Click **Deactivate** and confirm the badge flips to **Inactive**.
 10. Sign back in as the candidate whose resume you parsed in step 8, open **Matches** in the sidebar. You should see the posting from step 9 (if still active) with a similarity-score bar and skill chips split into "You have" (matched) and "Skill gap" (missing). A candidate with no parsed resume yet should see the "no parsed resume yet" empty state with a link back to `/candidate/resume` instead of an error.
+11. From a match card, click **Start interview** (or open **Interview** and click **Start practice interview**). You should land on the session URL with `?job=` and see generate status queued → running → succeeded, then questions. Do not expect the question list to update while generate is still queued. A candidate with no parsed resume who clicks practice start should see the upload CTA (404), not a crash. A generate failure shows the abandoned state.
+12. Type an answer (min 1 character) and click **Submit answer**. Evaluate status should poll the same way as generate (`?eval=`). When it succeeds, the score (0–5), rationale, strengths, and improvements appear. If the score is 0–2 on an original question, a follow-up row is appended — click **Next** after the session refetch; do not assume the question list is fixed at generate time. Re-submitting the same question is 409. A completed session stays readable.
+13. Optional: in Chromium, click **Start recording**, allow the microphone, speak, **Stop**, then **Upload recording**. The level meter / waveform should move while recording. Retry overwrites the stored blob. Safari is not supported. Audio upload does **not** score the answer; text submit is what enqueues the judge. Whisper is Phase 11.
 
 `GET /` on the API still 404s; use `/health` or `/docs` (and the port you actually bound).
 
@@ -625,8 +673,8 @@ provider, Pydantic JSON, versioned 0–5 rubrics, `GeneratedQuestions` / `Interv
 `backend/tests/test_resumes.py`, `test_postings.py`, `test_matches.py` (via the workers), and
 `test_ml_matching.py`. The LLM library is covered by `backend/tests/test_ml_llm.py` (MockTransport
 plus a skippable live-Ollama smoke). The interview engine is covered by `test_ml_interview.py` and
-`test_interviews.py` (fake provider + one skippable live generate+evaluate smoke).
-`ml/{speech,scoring}/` are still empty package stubs.
+`test_interviews.py` (fake provider + one skippable live generate+evaluate smoke, plus Phase 10
+audio-upload cases). `ml/{speech,scoring}/` are still empty package stubs.
 
 You can also exercise `ml/resume`, `ml/matching`, and `ml/llm` directly, without the API/worker:
 

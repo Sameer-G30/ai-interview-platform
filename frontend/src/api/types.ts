@@ -160,6 +160,75 @@ export type MatchListOut = {
   matches: MatchOut[] // sorted by score descending
 }
 
+// Session lifecycle stored on interview_sessions.status; JSON is the enum value, not the member name.
+export type InterviewSessionStatus = "scheduled" | "in_progress" | "completed" | "abandoned"
+
+// Judge payload stored on answers.evaluation once interview_evaluate succeeds (Phase 8 AnswerEvaluation).
+export type AnswerEvaluationOut = {
+  score: number // integer 0–5; the follow-up predicate is score <= 2
+  rationale: string // short justification from the judge
+  strengths: string[] // what went well
+  improvements: string[] // coaching notes; non-empty does NOT spawn a follow-up
+}
+
+// One answers row from GET /interviews/{id} (`AnswerOut`). JSON names match the live API (snake_case).
+export type AnswerOut = {
+  id: string // UUID string; submit target POST /interviews/{session_id}/answers/{id}
+  question_order: number // 0-based ask order, including follow-ups appended at the end
+  question_text: string // generated (or follow-up) prompt
+  question_kind: string // "technical" | "behavioral"
+  is_follow_up: boolean // True when the evaluate worker appended this row
+  answer_text: string | null // NULL until the candidate submits text
+  evaluation: AnswerEvaluationOut | null // {score, rationale, strengths, improvements} once judged
+  has_audio: boolean // True once POST .../audio wrote answers.audio_path (path itself is not in JSON)
+  created_at: string // ISO timestamp of row insert
+  updated_at: string // ISO timestamp of last write
+}
+
+// Exact JSON body FastAPI returns from GET /interviews/{id} (`InterviewSessionOut`).
+export type InterviewSessionOut = {
+  id: string // UUID string of the interview_sessions row
+  resume_id: string // parsed resume this session was generated from
+  job_id: string | null // optional posting; null for a practice interview
+  status: InterviewSessionStatus // scheduled | in_progress | completed | abandoned
+  started_at: string | null // set when generated questions are persisted
+  completed_at: string | null // set when every current question is answered and no follow-up is added
+  answers: AnswerOut[] // ordered by question_order
+  created_at: string // ISO timestamp of row insert
+  updated_at: string // ISO timestamp of last update
+}
+
+// Body for POST /interviews; both ids optional. Omitted resume_id uses the latest parsed resume.
+export type InterviewStartRequest = {
+  resume_id?: string | null // must be owned + parsed when set; 404/409 same as GET /matches
+  job_id?: string | null // optional posting; 404 if missing, 409 if inactive
+}
+
+// Exact JSON body FastAPI returns from POST /interviews (`InterviewStartOut`).
+export type InterviewStartOut = {
+  session_id: string // poll results via GET /interviews/{session_id}
+  async_job_id: string // poll generate progress via the existing GET /jobs/{id}
+  status: InterviewSessionStatus // "scheduled" at this point; the worker advances it to in_progress
+}
+
+// Body for POST /interviews/{session_id}/answers/{answer_id}. Text only; audio is a separate upload.
+export type AnswerSubmitRequest = {
+  answer_text: string // min_length 1 on the API; empty is 422
+}
+
+// Exact JSON body FastAPI returns from text submit (`AnswerSubmitOut`).
+export type AnswerSubmitOut = {
+  answer_id: string // the row whose evaluation the client will read after polling
+  async_job_id: string // poll via GET /jobs/{id}; same useJobStatus hook as generate
+  session_status: InterviewSessionStatus // still in_progress until the worker completes the session
+}
+
+// Exact JSON body FastAPI returns from POST .../audio (`AudioUploadOut`).
+export type AudioUploadOut = {
+  answer_id: string // the row whose audio_path was written
+  has_audio: boolean // always true on success
+}
+
 export class ApiError extends Error {
   readonly status: number // HTTP status code from the failed response
   readonly detail: string // human-readable message parsed from FastAPI's `detail` field

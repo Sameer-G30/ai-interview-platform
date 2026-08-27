@@ -18,7 +18,9 @@ from ml.llm import LLMProvider, config_from_settings  # fake wraps LLMProvider; 
 from app.auth import service  # register_user/issue_token_pair, used to mint tokens without hitting rate limits
 from app.core.config import Settings, get_settings  # Settings for tokens; live smoke reads LLM_* fields
 from app.core.db import AsyncSessionLocal  # session factory identical to the app's DI
-from app.models.enums import ResumeStatus, UserRole  # parsed vs uploaded resumes; candidate vs recruiter
+from app.models.answer import Answer  # audio-upload tests insert a question row without running generate
+from app.models.enums import InterviewSessionStatus, ResumeStatus, UserRole  # session lifecycle + resume/role
+from app.models.interview_session import InterviewSession  # audio tests insert a session without the LLM worker
 from app.models.job import Job  # optional posting inserted directly (no embedding needed for interviews)
 from app.models.resume import Resume  # parsed/uploaded rows inserted directly so tests never load MiniLM
 from app.workers.settings import run_burst_worker  # in-process ARQ drain used after enqueue
@@ -509,6 +511,121 @@ async def test_start_with_posting_puts_title_in_generate_prompt(client, redis_po
     joined = " ".join(turn["content"] for turn in backend.last_messages)
     assert "Platform Engineer" in joined  # posting title reached complete_json
     assert "Kubernetes" in joined  # required skills reached complete_json
+
+
+async def _insert_session_with_question(user_id: UUID, resume_id: UUID) -> tuple[UUID, UUID]:
+    """Insert an in_progress session plus one unanswered question so audio tests skip the LLM worker."""
+    async with AsyncSessionLocal() as session:
+        interview = InterviewSession(
+            user_id=user_id,
+            resume_id=resume_id,
+            status=InterviewSessionStatus.IN_PROGRESS,  # questions exist; generate already "happened"
+        )
+        session.add(interview)
+        await session.flush()  # need interview.id before the answers FK can be written
+        answer = Answer(
+            session_id=interview.id,
+            question_order=0,
+            question_text="What is a Python list?",
+            question_kind="technical",
+            is_follow_up=False,
+        )
+        session.add(answer)
+        await session.commit()
+        return interview.id, answer.id
+
+
+def _tiny_webm() -> bytes:
+    """A few bytes labelled as WebM; the upload endpoint does not parse the container this phase."""
+    return b"webm-test-bytes"  # content-type is what we validate, not a real EBML header
+
+
+async def test_audio_upload_stores_path_and_leaves_transcript_null(client, redis_pool):
+    """POST .../audio writes audio_path, sets has_audio, and does not enqueue evaluate or fill transcript."""
+    token, user_id = await _create_user_with_tokens("iv-audio-ok@example.com", "StrongPass123", UserRole.CANDIDATE)
+    resume_id = await _insert_resume(user_id, parsed=True)
+    session_id, answer_id = await _insert_session_with_question(user_id, resume_id)
+
+    response = await client.post(
+        f"/interviews/{session_id}/answers/{answer_id}/audio",
+        files={"file": ("answer.webm", _tiny_webm(), "audio/webm")},
+        headers=_bearer(token),
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer_id"] == str(answer_id)
+    assert body["has_audio"] is True
+
+    fetched = (await client.get(f"/interviews/{session_id}", headers=_bearer(token))).json()
+    row = fetched["answers"][0]
+    assert row["has_audio"] is True
+    assert row["answer_text"] is None  # audio is not a second scoring path; text submit still required
+    assert "audio_path" not in row  # filesystem path is excluded from JSON
+    async with AsyncSessionLocal() as db:
+        stored = await db.get(Answer, answer_id)
+        assert stored is not None
+        assert stored.audio_path is not None
+        assert stored.transcript is None  # Phase 11 Whisper; this endpoint must not invent a transcript
+
+
+async def test_audio_upload_is_owner_only_404(client, redis_pool):
+    """Another candidate posting audio to someone else's answer id gets 404, not 403."""
+    owner, owner_id = await _create_user_with_tokens("iv-aud-owner@example.com", "StrongPass123", UserRole.CANDIDATE)
+    other, _ = await _create_user_with_tokens("iv-aud-other@example.com", "StrongPass123", UserRole.CANDIDATE)
+    resume_id = await _insert_resume(owner_id, parsed=True)
+    session_id, answer_id = await _insert_session_with_question(owner_id, resume_id)
+
+    response = await client.post(
+        f"/interviews/{session_id}/answers/{answer_id}/audio",
+        files={"file": ("answer.webm", _tiny_webm(), "audio/webm")},
+        headers=_bearer(other),
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "session not found"
+
+
+async def test_recruiter_cannot_upload_audio(client, redis_pool):
+    """A recruiter account gets 403 from the audio upload; only candidates may store blobs."""
+    token, _ = await _create_user_with_tokens("iv-aud-rec@example.com", "StrongPass123", UserRole.RECRUITER)
+    response = await client.post(
+        "/interviews/00000000-0000-0000-0000-000000000001/answers/00000000-0000-0000-0000-000000000002/audio",
+        files={"file": ("answer.webm", _tiny_webm(), "audio/webm")},
+        headers=_bearer(token),
+    )
+    assert response.status_code == 403
+
+
+async def test_audio_upload_requires_auth(client, redis_pool):
+    """POST .../audio without a bearer token is 401."""
+    response = await client.post(
+        "/interviews/00000000-0000-0000-0000-000000000001/answers/00000000-0000-0000-0000-000000000002/audio",
+        files={"file": ("answer.webm", _tiny_webm(), "audio/webm")},
+    )
+    assert response.status_code == 401
+
+
+async def test_audio_upload_rejects_wrong_type_and_oversize(client, redis_pool):
+    """Non-webm content types and bodies over 10 MiB are 400 before the row is updated."""
+    token, user_id = await _create_user_with_tokens("iv-aud-bad@example.com", "StrongPass123", UserRole.CANDIDATE)
+    resume_id = await _insert_resume(user_id, parsed=True)
+    session_id, answer_id = await _insert_session_with_question(user_id, resume_id)
+
+    bad_type = await client.post(
+        f"/interviews/{session_id}/answers/{answer_id}/audio",
+        files={"file": ("answer.txt", b"not audio", "text/plain")},
+        headers=_bearer(token),
+    )
+    assert bad_type.status_code == 400
+
+    too_big = await client.post(
+        f"/interviews/{session_id}/answers/{answer_id}/audio",
+        files={"file": ("answer.webm", b"x" * (10 * 1024 * 1024 + 1), "audio/webm")},
+        headers=_bearer(token),
+    )
+    assert too_big.status_code == 400
+
+    fetched = (await client.get(f"/interviews/{session_id}", headers=_bearer(token))).json()
+    assert fetched["answers"][0]["has_audio"] is False  # rejected uploads must not flip the flag
 
 
 async def test_double_submit_is_409(client, redis_pool, monkeypatch):

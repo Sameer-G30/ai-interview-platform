@@ -25,7 +25,7 @@ export function getApiBaseUrl(): string {
     return raw.replace(/\/+$/, "") // "http://127.0.0.1:8001/" -> "http://127.0.0.1:8001"
   }
   if (import.meta.env.DEV) {
-    return "" // same-origin; Vite proxies /auth, /health, /jobs, /resumes, /postings, /matches to uvicorn (avoids CORS)
+    return "" // same-origin; Vite proxies /auth, /health, /jobs, /resumes, /postings, /matches, /interviews to uvicorn (avoids CORS)
   }
   return "http://localhost:8000" // production-style default when no VITE_API_BASE_URL is set
 }

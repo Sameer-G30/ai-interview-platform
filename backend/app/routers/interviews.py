@@ -1,25 +1,36 @@
-"""`/interviews/*` endpoints: candidate-only session start, owner-only GET, text answer submit.
+"""`/interviews/*` endpoints: candidate-only session start, owner-only GET, text submit, audio blob.
 
 No LLM runs inline here. `POST /interviews` inserts a scheduled session and enqueues
 `interview_generate`. `POST .../answers/{id}` stores `answer_text` and enqueues `interview_evaluate`.
+`POST .../answers/{id}/audio` writes `audio_path` only (transcript stays null; no Whisper this phase).
 The worker calls `ml.llm` inside `asyncio.to_thread`. Poll progress with the existing `GET /jobs/{id}`.
 """
 
 import uuid  # path params for session_id / answer_id; resume_id / job_id in the start body
+from pathlib import Path  # builds the on-disk path under settings.storage_root
 
 from arq.connections import ArqRedis  # injected Redis pool from app.state
-from fastapi import APIRouter, Depends, HTTPException, Request, status  # routing / DI / errors
+from fastapi import (  # routing / DI / errors / multipart audio
+    APIRouter,
+    Depends,
+    File,
+    HTTPException,
+    Request,
+    UploadFile,
+    status,
+)
 from sqlalchemy import select  # session GET with selectinload of answers
 from sqlalchemy.ext.asyncio import AsyncSession  # request-scoped DB session
 from sqlalchemy.orm import selectinload  # eager-load answers so GET does not lazy-IO in async
 
-from app.auth.dependencies import (  # start/submit are candidate-only; GET is any-auth 404
+from app.auth.dependencies import (  # start/submit/audio are candidate-only; GET is any-auth 404
     get_current_user,
     require_candidate,
 )
+from app.core.config import Settings, get_settings  # storage_root for MediaRecorder blobs
 from app.core.db import get_db_session  # yields the request-scoped AsyncSession
 from app.core.rate_limit import limiter  # slowapi limiter; start/submit enqueue jobs
-from app.models.answer import Answer  # submit target; generate worker inserts these
+from app.models.answer import Answer  # submit/audio target; generate worker inserts these
 from app.models.enums import InterviewSessionStatus  # scheduled / in_progress / completed / abandoned
 from app.models.interview_session import InterviewSession  # the row this router creates and reads
 from app.models.job import Job  # optional posting looked up by body.job_id
@@ -28,6 +39,7 @@ from app.routers.jobs import get_arq_redis  # reuse the same "is the queue conne
 from app.schemas.interviews import (  # request/response contracts
     AnswerSubmitIn,
     AnswerSubmitOut,
+    AudioUploadOut,
     InterviewSessionOut,
     InterviewStartIn,
     InterviewStartOut,
@@ -37,6 +49,24 @@ from app.workers.enqueue import EnqueueFailedError, enqueue_job  # insert queued
 from app.workers.job_types import JOB_TYPE_INTERVIEW_EVALUATE, JOB_TYPE_INTERVIEW_GENERATE  # plain string job types
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])  # every route here lives under /interviews/...
+
+# Chromium MediaRecorder with audio/webm;codecs=opus typically reports audio/webm; some builds use video/webm.
+_ALLOWED_AUDIO_TYPES = {"audio/webm", "video/webm"}
+# 10 MiB matches resume uploads; Opus at ~32 kbps is far smaller than this for a typical spoken answer.
+_MAX_AUDIO_BYTES = 10 * 1024 * 1024
+
+
+def _normalize_content_type(content_type: str | None) -> str:
+    """Strip codec parameters so `audio/webm;codecs=opus` matches the allow-list as `audio/webm`."""
+    raw = (content_type or "").split(";", 1)[0].strip().lower()  # "audio/webm;codecs=opus" -> "audio/webm"
+    return raw
+
+
+def _audio_storage_path(settings: Settings, session_id: uuid.UUID, answer_id: uuid.UUID) -> Path:
+    """Where one answer's WebM lives: `<storage_root>/interviews/<session_id>/<answer_id>.webm`."""
+    directory = Path(settings.storage_root) / "interviews" / str(session_id)  # one folder per session
+    directory.mkdir(parents=True, exist_ok=True)  # local dev/test runs may not have this dir yet
+    return directory / f"{answer_id}.webm"  # overwrite on retry; same path as a previous upload
 
 
 async def _resolve_optional_posting(session: AsyncSession, job_id: uuid.UUID | None) -> Job | None:
@@ -126,7 +156,7 @@ async def submit_answer(
     redis: ArqRedis = Depends(get_arq_redis),
     current_user: User = Depends(require_candidate),
 ) -> AnswerSubmitOut:
-    """Store a text answer and enqueue evaluation. Audio/transcript stay NULL (Phase 10+)."""
+    """Store a text answer and enqueue evaluation. Audio is a separate POST .../audio; transcript stays NULL."""
     interview = await session.get(InterviewSession, session_id)
     if interview is None or interview.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
@@ -158,3 +188,48 @@ async def submit_answer(
         ) from exc
 
     return AnswerSubmitOut(answer_id=answer.id, async_job_id=job.id, session_status=interview.status)
+
+
+@router.post("/{session_id}/answers/{answer_id}/audio", response_model=AudioUploadOut)
+@limiter.limit("20/minute")  # disk write + possible overwrite; same bucket as text submit
+async def upload_answer_audio(
+    request: Request,  # required so slowapi can key the limit on client IP
+    session_id: uuid.UUID,
+    answer_id: uuid.UUID,
+    file: UploadFile = File(...),  # multipart field name is `file`, matching POST /resumes
+    session: AsyncSession = Depends(get_db_session),
+    settings: Settings = Depends(get_settings),
+    current_user: User = Depends(require_candidate),
+) -> AudioUploadOut:
+    """Store a Chromium MediaRecorder WebM blob on `audio_path`. Does not enqueue evaluate or run Whisper.
+
+    Text submit remains the only path that queues `interview_evaluate` (the judge needs `answer_text`).
+    Transcript stays NULL until Phase 11. Retry overwrites the same file. Abandoned sessions 409.
+    """
+    interview = await session.get(InterviewSession, session_id)
+    if interview is None or interview.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
+    if interview.status == InterviewSessionStatus.ABANDONED:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="session is not accepting answers")
+    answer = await session.get(Answer, answer_id)
+    if answer is None or answer.session_id != interview.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="answer not found")
+
+    content_type = _normalize_content_type(file.content_type)
+    if content_type not in _ALLOWED_AUDIO_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"unsupported content type: {file.content_type!r}; only audio/webm is accepted",
+        )
+
+    contents = await file.read()  # spoken answers are small enough to buffer fully before the size check
+    if not contents:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="uploaded file is empty")
+    if len(contents) > _MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="file exceeds the 10 MiB upload limit")
+
+    destination = _audio_storage_path(settings, interview.id, answer.id)
+    destination.write_bytes(contents)  # overwrite on retry so a second capture replaces the first blob
+    answer.audio_path = str(destination)  # Phase 11 Whisper will read this; transcript stays null
+    await session.commit()  # persist the path; no ARQ job — audio is storage only this phase
+    return AudioUploadOut(answer_id=answer.id, has_audio=True)
