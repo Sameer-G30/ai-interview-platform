@@ -237,7 +237,7 @@ request handlers this phase):
   - `schemas.py` — `AnswerEvaluation` (integer `score` 0–5, `rationale`, `strengths`, `improvements`).
   - `rubrics/` — versioned markdown files (`technical_answer_v1.md`, `behavioral_answer_v1.md`).
   Bumping a rubric is a new file; backends never hardcode the 0–5 wording.
-- **Settings**: `LLM_PROVIDER`, `OLLAMA_`*, `OPENAI_COMPAT_*` from `.env.example` are real
+- **Settings**: `LLM_PROVIDER`, `OLLAMA_`*, `OPENAI_COMPAT_`* from `.env.example` are real
 `Settings` fields. Product code should map them with `config_from_settings(get_settings())` —
 pydantic-settings does **not** copy `.env` into `os.environ`. No new Alembic migration (provider
 config is not a table).
@@ -344,7 +344,7 @@ interview dashboard.
 
 ```bash
 cd "Project-2 MLIS/ai-interview-platform"
-cp .env.example .env             # then fill in real secrets locally; .env is gitignored
+cp .env.example .env             # then fill in real secrets locally; .env gitignored
 uv sync                          # create .venv and install backend/ml dependencies (includes the
                                   # en_core_web_sm spaCy model, pinned as a direct wheel URL in
                                   # pyproject.toml so `uv sync` alone is enough — no separate
@@ -630,6 +630,8 @@ curl -s -X POST http://localhost:8000/interviews/<SESSION_ID>/answers/<ANSWER_ID
   -H "Authorization: Bearer <CANDIDATE_ACCESS_TOKEN>" \
   -F "file=@/tmp/answer.webm;type=audio/webm"
 ```
+
+
 
 ### Frontend — lint, build, auth, resume, matches, and interview walkthrough
 
