@@ -406,6 +406,7 @@ If another project already owns 8000/5173 (common on this machine), use **8001**
 
    # terminal 2 — ARQ worker (same .env / Redis as the API)
    uv run arq app.workers.settings.WorkerSettings
+
    # terminal 3 — Vite is pinned to 5174 in vite.config.ts / package.json
    cd frontend
    npm run dev
