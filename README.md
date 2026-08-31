@@ -357,7 +357,7 @@ uv run uvicorn app.main:app --reload --app-dir backend --host 127.0.0.1 --port 8
 Uvicorn does **not** read `API_PORT` from `.env`; you must pass `--port`. This machine already uses
 8000 for another project, so **8001** is the local default here.
 
-In a second terminal, the ARQ worker (jobs stay `queued` until this is running)
+In a second terminal, the ARQ worker (jobs stay `queued` until this is running):
 
 ```bash
 cd "Project-2 MLIS/ai-interview-platform"
