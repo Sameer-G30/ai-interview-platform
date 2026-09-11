@@ -1,26 +1,44 @@
 import type { AsyncJobOut, AsyncJobStatus } from "@/api/types" // GET /jobs/{id} payload + status union
 
 // Which worker this banner is describing; copy differs because generate and evaluate are different jobs.
-export type InterviewJobKind = "generate" | "evaluate" // generate writes questions; evaluate writes the score
+export type InterviewJobKind = "generate" | "evaluate" | "transcribe" // generate / judge / Whisper
 
 // Maps a job status to a short candidate-facing sentence for the given worker kind.
 function labelForStatus(kind: InterviewJobKind, status: AsyncJobStatus): string {
   if (status === "queued") {
-    return kind === "generate"
-      ? "Queued — waiting for a worker to generate questions."
-      : "Queued — waiting for a worker to score this answer."
+    if (kind === "generate") {
+      return "Queued — waiting for a worker to generate questions."
+    }
+    if (kind === "evaluate") {
+      return "Queued — waiting for a worker to score this answer."
+    }
+    return "Queued — waiting for a worker to transcribe this recording."
   }
   if (status === "running") {
-    return kind === "generate"
-      ? "Running — the judge is writing questions from your resume."
-      : "Running — the judge is scoring this answer."
+    if (kind === "generate") {
+      return "Running — the judge is writing questions from your resume."
+    }
+    if (kind === "evaluate") {
+      return "Running — the judge is scoring this answer."
+    }
+    return "Running — transcribing the recording (ffmpeg + Whisper)."
   }
   if (status === "succeeded") {
-    return kind === "generate" ? "Succeeded — loading questions." : "Succeeded — loading the score."
+    if (kind === "generate") {
+      return "Succeeded — loading questions."
+    }
+    if (kind === "evaluate") {
+      return "Succeeded — loading the score."
+    }
+    return "Succeeded — loading the transcript."
   }
-  return kind === "generate"
-    ? "Failed — question generation did not complete."
-    : "Failed — scoring did not complete. This answer cannot be re-submitted."
+  if (kind === "generate") {
+    return "Failed — question generation did not complete."
+  }
+  if (kind === "evaluate") {
+    return "Failed — scoring did not complete. This answer cannot be re-submitted."
+  }
+  return "Failed — transcription did not complete. You can re-upload the recording."
 }
 
 // Queued / running / failed panel driven by useJobStatus (do not poll GET /interviews while generate is queued).

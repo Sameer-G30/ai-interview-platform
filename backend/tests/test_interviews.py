@@ -541,7 +541,7 @@ def _tiny_webm() -> bytes:
 
 
 async def test_audio_upload_stores_path_and_leaves_transcript_null(client, redis_pool):
-    """POST .../audio writes audio_path, sets has_audio, and does not enqueue evaluate or fill transcript."""
+    """POST .../audio writes audio_path, enqueues transcribe, and does not fill transcript until the worker runs."""
     token, user_id = await _create_user_with_tokens("iv-audio-ok@example.com", "StrongPass123", UserRole.CANDIDATE)
     resume_id = await _insert_resume(user_id, parsed=True)
     session_id, answer_id = await _insert_session_with_question(user_id, resume_id)
@@ -555,17 +555,24 @@ async def test_audio_upload_stores_path_and_leaves_transcript_null(client, redis
     body = response.json()
     assert body["answer_id"] == str(answer_id)
     assert body["has_audio"] is True
+    assert body["async_job_id"]  # SPA reuses useJobStatus; no second poller
+
+    polled = (await client.get(f"/jobs/{body['async_job_id']}", headers=_bearer(token))).json()
+    assert polled["job_type"] == "transcribe"  # plain string, not a Postgres ENUM
+    assert polled["status"] == "queued"  # worker has not run; this test does not drain ARQ
 
     fetched = (await client.get(f"/interviews/{session_id}", headers=_bearer(token))).json()
     row = fetched["answers"][0]
     assert row["has_audio"] is True
     assert row["answer_text"] is None  # audio is not a second scoring path; text submit still required
+    assert row["transcript"] is None  # still null until the transcribe worker succeeds
+    assert row["speech_metrics"] is None  # timings/fluency land with the transcript
     assert "audio_path" not in row  # filesystem path is excluded from JSON
     async with AsyncSessionLocal() as db:
         stored = await db.get(Answer, answer_id)
         assert stored is not None
         assert stored.audio_path is not None
-        assert stored.transcript is None  # Phase 11 Whisper; this endpoint must not invent a transcript
+        assert stored.transcript is None  # this endpoint must not invent a transcript
 
 
 async def test_audio_upload_is_owner_only_404(client, redis_pool):

@@ -4,7 +4,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom" // session i
 
 import { fetchInterview, interviewQueryKeys, submitAnswer } from "@/api/interviews" // GET session + POST text
 import { ApiError } from "@/api/types" // poll / GET / submit failures
-import type { AnswerOut, InterviewSessionOut } from "@/api/types" // question rows + session status
+import type { AnswerOut, AudioUploadOut, InterviewSessionOut } from "@/api/types" // question rows + session status
 import { AudioRecorder } from "@/components/interview/audio-recorder" // MediaRecorder capture + upload
 import { EvaluationCard } from "@/components/interview/evaluation-card" // score 0–5 + rationale
 import { InterviewJobStatus } from "@/components/interview/interview-job-status" // queued/running/failed copy
@@ -44,6 +44,7 @@ export function CandidateInterviewSessionPage() {
   const [submitError, setSubmitError] = useState<string | null>(null) // 409 already-submitted / completed, or network
   const [indexReady, setIndexReady] = useState(false) // first unanswered pick runs once per session load
   const [pendingAnswerId, setPendingAnswerId] = useState<string | null>(null) // answer we just submitted, before GET refetch
+  const [transcribeJobs, setTranscribeJobs] = useState<Record<string, string>>({}) // answer_id -> transcribe async_job_id; in-memory only
 
   const sessionQuery = useQuery({
     queryKey: sessionId === undefined ? interviewQueryKeys.all : interviewQueryKeys.detail(sessionId), // idle key unused
@@ -55,6 +56,11 @@ export function CandidateInterviewSessionPage() {
   const session: InterviewSessionOut | undefined = sessionQuery.data // undefined until the first GET
   const answers = session?.answers ?? [] // empty while scheduled / generate failed
   const current = answers[index] // undefined if generate produced no rows (abandoned)
+  const transcribeJobId =
+    current !== undefined && transcribeJobs[current.id] !== undefined ? transcribeJobs[current.id] : null // per-question
+  const transcribeQuery = useJobStatus(transcribeJobId) // disabled when this question has no in-memory job id
+  const transcribeStatus = transcribeQuery.data?.status // queued | running | succeeded | failed | undefined
+  const transcribeTerminal = transcribeStatus === "succeeded" || transcribeStatus === "failed" // then refetch session
 
   useEffect(() => {
     if (session === undefined || session.answers.length === 0 || indexReady) {
@@ -79,6 +85,13 @@ export function CandidateInterviewSessionPage() {
     void queryClient.invalidateQueries({ queryKey: interviewQueryKeys.detail(sessionId) }) // score + maybe follow-up
   }, [evaluateJobId, evaluateTerminal, queryClient, sessionId])
 
+  useEffect(() => {
+    if (transcribeJobId === null || !transcribeTerminal || sessionId === undefined) {
+      return // still polling, or this question has no transcribe job in memory
+    }
+    void queryClient.invalidateQueries({ queryKey: interviewQueryKeys.detail(sessionId) }) // transcript + speech_metrics
+  }, [transcribeJobId, transcribeTerminal, queryClient, sessionId])
+
   const generatePollError =
     generateQuery.error instanceof ApiError
       ? generateQuery.error.detail
@@ -91,6 +104,12 @@ export function CandidateInterviewSessionPage() {
       : evaluateQuery.isError
         ? evaluateQuery.error.message
         : null // evaluate poller error copy
+  const transcribePollError =
+    transcribeQuery.error instanceof ApiError
+      ? transcribeQuery.error.detail
+      : transcribeQuery.isError
+        ? transcribeQuery.error.message
+        : null // transcribe poller error copy
   const sessionError =
     sessionQuery.error instanceof ApiError
       ? sessionQuery.error.detail
@@ -240,7 +259,7 @@ export function CandidateInterviewSessionPage() {
               onChange={(event) => {
                 setDraft(event.target.value) // local only until Submit
               }}
-              placeholder="Type your answer. Recording is optional and is not scored this phase."
+              placeholder="Type your answer. Recording is optional; upload queues transcription. Text submit scores the answer."
             />
             {submitError !== null ? (
               <p className="text-sm text-destructive" role="alert">
@@ -283,10 +302,30 @@ export function CandidateInterviewSessionPage() {
               sessionId={sessionId}
               answerId={current.id}
               hasAudio={current.has_audio}
-              onUploaded={() => {
+              onUploaded={(body: AudioUploadOut) => {
+                setTranscribeJobs((prev) => ({ ...prev, [body.answer_id]: body.async_job_id })) // reuse useJobStatus
                 void queryClient.invalidateQueries({ queryKey: interviewQueryKeys.detail(sessionId) }) // has_audio
               }}
             />
+            {transcribeJobId !== null ? (
+              <InterviewJobStatus
+                kind="transcribe"
+                job={transcribeQuery.data}
+                isLoading={transcribeQuery.isPending}
+                pollError={transcribePollError}
+              />
+            ) : null}
+            {current.transcript !== null && current.transcript.length > 0 ? (
+              <p className="text-sm text-muted-foreground" data-testid="transcript-ready">
+                Transcript ready: {current.transcript.length > 240 ? `${current.transcript.slice(0, 240)}…` : current.transcript}
+              </p>
+            ) : null}
+            {current.has_audio && current.transcript === null && transcribeStatus !== "failed" && transcribeJobId === null ? (
+              <p className="text-sm text-muted-foreground">
+                Recording stored. Reload after the worker finishes to see the transcript, or re-upload to queue transcribe
+                again.
+              </p>
+            ) : null}
           </CardContent>
         </Card>
       ) : null}

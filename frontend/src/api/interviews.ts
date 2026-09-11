@@ -39,12 +39,12 @@ export async function submitAnswer(sessionId: string, answerId: string, answerTe
   })
 }
 
-// POST /interviews/{session_id}/answers/{answer_id}/audio — multipart field `file`; does not enqueue evaluate.
+// POST /interviews/{session_id}/answers/{answer_id}/audio — multipart field `file`; enqueues transcribe, not evaluate.
 export async function uploadAnswerAudio(
   sessionId: string, // parent session UUID
   answerId: string, // answers row UUID
   file: File, // WebM/Opus blob from MediaRecorder
-  onProgress?: (percent: number) => void, // XHR upload progress; 100 does not mean Whisper ran
+  onProgress?: (percent: number) => void, // XHR upload progress; 100 does not mean Whisper finished
 ): Promise<AudioUploadOut> {
   const formData = new FormData() // multipart body; do not JSON.stringify (apiFetch would)
   formData.append("file", file, file.name || "answer.webm") // FastAPI UploadFile field is named `file`

@@ -22,9 +22,9 @@ from app.models.mixins import TimestampMixin, UUIDPrimaryKeyMixin  # id + create
 class Answer(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     """A single question posed to the candidate plus their response.
 
-    Transcript/audio columns exist so the speech-pipeline phase can populate them without another
-    migration; Phase 9 leaves them NULL (text answers only). `evaluation` holds the Phase 8
-    `AnswerEvaluation` JSON once `interview_evaluate` succeeds.
+    `audio_path` / `transcript` date from Phase 2. Phase 11 adds `speech_metrics` (JSON) for word
+    timings and dual fluency — stuffing that into the Text transcript would break the analysis UI.
+    `evaluation` holds the Phase 8 `AnswerEvaluation` JSON once `interview_evaluate` succeeds.
     """
 
     __tablename__ = "answers"
@@ -50,6 +50,8 @@ class Answer(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     audio_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # Whisper transcript of audio_path, filled in by the speech-pipeline phase's transcribe worker.
     transcript: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Word timings + dual fluency + VAD + prosody JSON; NULL until transcribe succeeds. Not stuffed into transcript.
+    speech_metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     # AnswerEvaluation JSON {score, rationale, strengths, improvements}; NULL until interview_evaluate succeeds.
     evaluation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 

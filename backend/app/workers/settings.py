@@ -3,13 +3,14 @@
 from arq.worker import Worker, func  # Worker for in-process burst tests; func() sets per-task max_tries
 
 from app.core.redis import get_redis_settings  # same REDIS_URL the API uses
-from app.workers.tasks import (  # demo + resume/posting ML + interview generate/evaluate
+from app.workers.tasks import (  # demo + resume/posting ML + interview generate/evaluate + transcribe
     demo_echo,
     demo_fail,
     interview_evaluate,
     interview_generate,
     posting_embed,
     resume_parse,
+    transcribe,
 )
 
 
@@ -44,13 +45,16 @@ class WorkerSettings:
         # a follow-up in the same pass. 300s cap is the 8GB-card cold-load budget, not a keep_alive tweak.
         func(interview_generate, name="interview_generate", max_tries=1, timeout=180),
         func(interview_evaluate, name="interview_evaluate", max_tries=1, timeout=300),
+        # Whisper is slower than resume parse; first GPU load can be tens of seconds. Demo/resume
+        # timeouts stay at 60s. Do not keep Whisper resident — the task unloads inside ml.speech.
+        func(transcribe, name="transcribe", max_tries=1, timeout=180),
     ]
     redis_settings = get_redis_settings()  # parsed once at import from REDIS_URL / Settings
     on_startup = startup  # called when the worker process (or burst Worker) starts
     on_shutdown = shutdown  # called when the worker process (or burst Worker) stops
     max_tries = 1  # default for any function that forgets func(..., max_tries=1)
     retry_jobs = False  # do not re-queue crashed jobs; the Postgres row already records failed
-    job_timeout = 60  # seconds; demo jobs are sub-second, resume/whisper later will raise this
+    job_timeout = 60  # seconds; demo jobs are sub-second; per-func timeout raises this for Whisper / LLM
 
 
 async def run_burst_worker() -> None:

@@ -46,6 +46,14 @@ class Settings(BaseSettings):
     openai_compat_api_key: str = ""                 # Bearer token; blank when using Ollama or a keyless local server
     openai_compat_model: str = "gpt-4o-mini"        # model id sent to the OpenAI-compatible server
 
+    # --- Speech pipeline (ml/speech; Phase 11 worker reads these — the API process must not load Whisper) ---
+    whisper_model: str = "medium.en"                # faster-whisper size/tag; distil-large-v3 also fits 8GB
+    whisper_device: str = "cuda"                    # cuda | cpu; product default is GPU
+    whisper_compute_type: str = "int8_float16"      # CTranslate2 quantized type for 8GB VRAM
+    ffmpeg_path: str = "ffmpeg"                     # binary name or absolute path; WebM is transcoded before Whisper
+    speech_min_pause_s: float = 0.2                 # pause floor for both fluency arms (seconds)
+    whisper_language: str = "en"                    # force English; skip Whisper language detection
+
 
     def cors_allow_origins(self) -> list[str]:
         """Origins Starlette may echo back. `localhost` and `127.0.0.1` are different origins."""

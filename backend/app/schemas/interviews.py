@@ -36,15 +36,17 @@ class AnswerOut(BaseModel):
     is_follow_up: bool  # True when the evaluate worker appended this row
     answer_text: str | None  # NULL until the candidate submits
     evaluation: dict[str, Any] | None  # {score, rationale, strengths, improvements} once judged
+    transcript: str | None = None  # Whisper utterance string; NULL until transcribe succeeds or when text-only
+    speech_metrics: dict[str, Any] | None = None  # word timings + dual fluency; NULL until transcribe succeeds
     created_at: datetime  # row insert time (question generated or follow-up appended)
-    updated_at: datetime  # last write (submit / evaluation)
+    updated_at: datetime  # last write (submit / evaluation / transcribe)
     # Loaded from the ORM so has_audio can be derived; never serialized (do not leak storage_root paths).
     audio_path: str | None = Field(default=None, exclude=True)
 
     @computed_field  # JSON key has_audio; mirrors PostingOut.has_embedding rather than exposing the blob path
     @property
     def has_audio(self) -> bool:
-        """True once a Phase 10 MediaRecorder upload wrote answers.audio_path; transcript stays null until Phase 11."""
+        """True once a MediaRecorder upload wrote answers.audio_path; the filesystem path stays out of JSON."""
         return self.audio_path is not None and len(self.audio_path) > 0
 
 
@@ -83,3 +85,4 @@ class AudioUploadOut(BaseModel):
 
     answer_id: uuid.UUID  # the row whose audio_path was written
     has_audio: bool  # always True on success; the SPA uses this instead of the filesystem path
+    async_job_id: uuid.UUID  # poll transcribe via GET /jobs/{id}; same useJobStatus hook as generate/evaluate

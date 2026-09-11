@@ -171,6 +171,48 @@ export type AnswerEvaluationOut = {
   improvements: string[] // coaching notes; non-empty does NOT spawn a follow-up
 }
 
+// One faster-whisper token with timings, stored under speech_metrics.words.
+export type WordTimestampOut = {
+  word: string // surface token; may include a leading space from Whisper
+  start: number // seconds from the start of the transcoded WAV
+  end: number // seconds; >= start
+  probability: number // 0–1 per-word confidence
+}
+
+// One fluency arm (transcript-derived or acoustic-derived). The analysis UI picks later.
+export type FluencyMetricsOut = {
+  speech_rate_wpm: number // words / total_duration_s * 60
+  articulation_rate_wpm: number // words / speaking_duration_s * 60
+  mean_pause_duration_s: number // mean of pause lengths; 0 when none
+  pause_ratio: number // pause_duration / total_duration
+  filler_rate: number // filler_count / word_count
+  filler_count: number // filled pauses (transcript) or unaligned VAD bursts (acoustic)
+  word_count: number // ASR word count used as the numerator
+  total_duration_s: number // clock for speech_rate
+  speaking_duration_s: number // clock for articulation_rate
+  pause_duration_s: number // sum of pause lengths
+  pause_count: number // how many pauses passed the 200ms floor
+}
+
+// JSON stored on answers.speech_metrics after a successful transcribe job.
+export type SpeechMetricsOut = {
+  words: WordTimestampOut[] // word timings for the later transcript viewer
+  language: string | null // "en" when Whisper was forced English
+  duration_s: number // wav duration in seconds
+  fluency_transcript: FluencyMetricsOut // pauses from ASR word-timestamp gaps
+  fluency_acoustic: FluencyMetricsOut // pauses / speaking time from Silero VAD
+  prosody: {
+    pitch_mean_hz: number // mean F0 over voiced frames
+    pitch_std_hz: number // F0 spread
+    intensity_mean_db: number // mean intensity
+    intensity_std_db: number // intensity spread
+  }
+  vad: {
+    speech_segments: { start: number; end: number }[] // Silero voiced islands
+    pauses: { start: number; end: number; duration: number }[] // internal pauses
+  }
+}
+
 // One answers row from GET /interviews/{id} (`AnswerOut`). JSON names match the live API (snake_case).
 export type AnswerOut = {
   id: string // UUID string; submit target POST /interviews/{session_id}/answers/{id}
@@ -181,6 +223,8 @@ export type AnswerOut = {
   answer_text: string | null // NULL until the candidate submits text
   evaluation: AnswerEvaluationOut | null // {score, rationale, strengths, improvements} once judged
   has_audio: boolean // True once POST .../audio wrote answers.audio_path (path itself is not in JSON)
+  transcript: string | null // Whisper utterance; NULL until transcribe succeeds or when text-only
+  speech_metrics: SpeechMetricsOut | null // word timings + dual fluency; NULL until transcribe succeeds
   created_at: string // ISO timestamp of row insert
   updated_at: string // ISO timestamp of last write
 }
@@ -227,6 +271,7 @@ export type AnswerSubmitOut = {
 export type AudioUploadOut = {
   answer_id: string // the row whose audio_path was written
   has_audio: boolean // always true on success
+  async_job_id: string // poll transcribe via GET /jobs/{id}; same useJobStatus hook as generate
 }
 
 export class ApiError extends Error {

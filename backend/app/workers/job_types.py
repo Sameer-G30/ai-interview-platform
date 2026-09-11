@@ -1,7 +1,7 @@
 """String job_type values stored on `async_jobs.job_type` and mapped to ARQ function names.
 
-These are plain strings (not a Postgres ENUM) so later phases can add transcribe / score
-without a migration. Demo, resume_parse, posting_embed, and interview generate/evaluate are registered.
+These are plain strings (not a Postgres ENUM) so later phases can add score
+without a migration. Demo, resume_parse, posting_embed, interview generate/evaluate, and transcribe are registered.
 """
 
 JOB_TYPE_DEMO_ECHO = "demo_echo"  # echoes payload["message"] after an optional sleep; used by the SPA demo
@@ -17,6 +17,9 @@ JOB_TYPE_POSTING_EMBED = "posting_embed"
 # matching resume_parse writing the embedding in the same worker pass. Still plain strings.
 JOB_TYPE_INTERVIEW_GENERATE = "interview_generate"
 JOB_TYPE_INTERVIEW_EVALUATE = "interview_evaluate"
+# Speech-pipeline phase: ffmpeg transcode + faster-whisper + Silero VAD + Praat + dual fluency.
+# Enqueued from POST .../audio after the WebM is on disk. Still a plain string, not a Postgres ENUM.
+JOB_TYPE_TRANSCRIBE = "transcribe"
 
 # ARQ enqueue_job's first argument is the worker function's registered name, which we keep identical
 # to job_type so the Postgres row and the Redis message point at the same handler.
@@ -27,4 +30,5 @@ JOB_TYPE_TO_FUNCTION: dict[str, str] = {
     JOB_TYPE_POSTING_EMBED: "posting_embed",  # handled by app.workers.tasks.posting_embed
     JOB_TYPE_INTERVIEW_GENERATE: "interview_generate",  # handled by app.workers.tasks.interview_generate
     JOB_TYPE_INTERVIEW_EVALUATE: "interview_evaluate",  # handled by app.workers.tasks.interview_evaluate
+    JOB_TYPE_TRANSCRIBE: "transcribe",  # handled by app.workers.tasks.transcribe
 }

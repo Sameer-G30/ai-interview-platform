@@ -2,13 +2,16 @@
 
 Phase 4 shipped demo jobs only. The resume-pipeline phase adds `resume_parse`, the first task that
 actually calls into `ml/`. Phase 9 adds `interview_generate` / `interview_evaluate`, which call
-`ml.llm` inside `asyncio.to_thread` and never run in a FastAPI request handler.
+`ml.llm` inside `asyncio.to_thread`. Phase 11 adds `transcribe`, which calls `ml.speech` the same
+way and never runs in a FastAPI request handler.
 """
 
 import asyncio  # optional sleep for the demo jobs; asyncio.to_thread runs the sync ml/ work
+import hashlib  # sha256 of the WebM so a retry-overwrite cannot be clobbered by a stale transcribe
 import logging  # worker-side log line when a resume fails to parse (short reason only, no traceback here)
 import uuid  # resume_id / job_id / session_id in the job payload are UUID strings on the wire
 from datetime import UTC, datetime  # started_at / completed_at written by the interview workers
+from pathlib import Path  # transcribe checks that answers.audio_path still exists on disk
 
 from ml.interview import build_followup_messages, build_generate_messages, rubric_name_for_kind, should_follow_up
 from ml.llm import (  # Phase 8 provider; constructed inside the handler, never at this module's import time
@@ -22,6 +25,13 @@ from ml.llm import (  # Phase 8 provider; constructed inside the handler, never 
 )
 from ml.matching.embed import embed_text  # lazy-loaded SBERT singleton, used for both resumes and postings
 from ml.resume import ResumeParseError, run_resume_pipeline  # PyMuPDF/pypdfium2 + spaCy + ESCO + ATS, one call
+from ml.speech import (  # Phase 11 pipeline; constructed inside the handler, never at FastAPI import
+    SpeechConfig,
+    SpeechError,
+    SpeechPipelineResult,
+    run_speech_pipeline,
+)
+from ml.speech.config import config_from_settings as speech_config_from_settings  # Settings -> SpeechConfig
 from sqlalchemy import func, select  # max(question_order) when appending a follow-up row
 
 from app.core.config import get_settings  # Settings -> LLMConfig via config_from_settings (not os.environ)
@@ -359,6 +369,94 @@ async def interview_evaluate(ctx: dict) -> dict:
             "score": evaluation.score,
             "follow_up_appended": follow_up_appended,
             "session_status": session_status,  # in_progress or completed after this pass
+        }
+
+    return await run_tracked_job(ctx, _handle)
+
+
+def _sha256_file(path: str) -> str:
+    """Hex digest of a blob so a retry overwrite can skip a stale in-flight transcribe write."""
+    digest = hashlib.sha256()  # running hash
+    with Path(path).open("rb") as handle:  # audio_path is a local filesystem path under storage_root
+        for chunk in iter(lambda: handle.read(65536), b""):  # 64 KiB chunks; spoken answers are small
+            digest.update(chunk)  # fold this block into the digest
+    return digest.hexdigest()  # compared before writing transcript/metrics
+
+
+def _run_speech_pipeline(audio_path: str) -> SpeechPipelineResult:
+    """Sync pipeline call; tests monkeypatch this name so the default suite never loads Whisper.
+
+    Product code uses `speech_config_from_settings(get_settings())` because pydantic-settings does
+    not copy `.env` into `os.environ`. Looked up at call time inside `asyncio.to_thread`.
+    """
+    config: SpeechConfig = speech_config_from_settings(get_settings())  # WHISPER_* / FFMPEG_PATH from Settings
+    return run_speech_pipeline(audio_path, config=config)  # ffmpeg + ASR + VAD + Praat + dual fluency
+
+
+async def transcribe(ctx: dict) -> dict:
+    """Transcribe one answer's WebM blob and persist transcript + speech_metrics.
+
+    No-op success when `audio_path` is null (text-only answers). Does not call the LLM and does
+    not complete/abandon the session. A retry overwrite of the same webm re-enqueues this type;
+    if the file hash changed while we ran, we skip the write so stale metrics cannot clobber the
+    new take. Typed `SpeechError`s fail the async job with a short message.
+    """
+
+    async def _handle(payload: dict | None) -> dict:
+        body = payload or {}
+        answer_id = uuid.UUID(str(body["answer_id"]))  # enqueue helper always sets this key
+        async with AsyncSessionLocal() as session:  # short session to copy the path; do not pass ORM into to_thread
+            answer = await session.get(Answer, answer_id)
+            if answer is None:
+                raise RuntimeError(f"answer {answer_id} was not found")  # POST .../audio must commit first
+            audio_path = answer.audio_path  # None for text-only; skip rather than fail evaluate
+            session_id = answer.session_id  # for the result payload
+        if not audio_path:
+            return {
+                "answer_id": str(answer_id),
+                "session_id": str(session_id),
+                "skipped": True,  # text-only: transcribe is a no-op, not a failed job
+                "reason": "no audio",
+            }
+        path = Path(audio_path)  # local blob
+        if not path.is_file():
+            raise RuntimeError(f"audio file is missing: {audio_path}")  # upload wrote it; disk vanished
+        digest = _sha256_file(audio_path)  # snapshot before the (slow) pipeline
+        try:
+            result = await asyncio.to_thread(_run_speech_pipeline, audio_path)  # ffmpeg/whisper/vad/praat are sync
+        except SpeechError:
+            logger.warning("answer %s transcribe failed with a typed speech error", answer_id)  # expected: ffmpeg/ASR
+            raise  # run_tracked_job writes FAILED + a short error; do not invent a transcript
+        except Exception:
+            logger.exception("answer %s transcribe crashed unexpectedly", answer_id)  # unexpected: full traceback
+            raise
+        async with AsyncSessionLocal() as session:  # persist only if this blob is still the current take
+            answer = await session.get(Answer, answer_id)
+            if answer is None:
+                raise RuntimeError(f"answer {answer_id} disappeared")  # should not happen
+            if not answer.audio_path:
+                return {
+                    "answer_id": str(answer_id),
+                    "session_id": str(session_id),
+                    "skipped": True,  # audio was cleared while we ran
+                    "reason": "no audio",
+                }
+            if not Path(answer.audio_path).is_file() or _sha256_file(answer.audio_path) != digest:
+                return {
+                    "answer_id": str(answer_id),
+                    "session_id": str(session_id),
+                    "skipped": True,  # a newer upload replaced the webm; that job will write
+                    "reason": "audio replaced",
+                }
+            answer.transcript = result.transcript  # plain text; empty string is still a successful ASR
+            answer.speech_metrics = result.to_metrics_dict()  # words + dual fluency + VAD + prosody
+            await session.commit()
+        return {
+            "answer_id": str(answer_id),
+            "session_id": str(session_id),
+            "skipped": False,  # worker wrote transcript + metrics
+            "word_count": len(result.asr.words),  # handy for GET /jobs/{id} without opening the session
+            "transcript_chars": len(result.transcript),  # 0 means Whisper heard nothing; still succeeded
         }
 
     return await run_tracked_job(ctx, _handle)

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react" // recorder lifecycle, analy
 
 import { AUDIO_MIME, MAX_AUDIO_BYTES, uploadAnswerAudio } from "@/api/interviews" // Chromium webm/opus + 10 MiB cap
 import { ApiError } from "@/api/types" // FastAPI detail for upload failures
+import type { AudioUploadOut } from "@/api/types" // async_job_id so the parent can reuse useJobStatus
 import { Button } from "@/components/ui/button" // record / stop / upload / retry; do not restyle the primitive
 
 // Permission / capability states the candidate can actually recover from (Chromium-first; no Safari promise).
@@ -13,7 +14,7 @@ type AudioRecorderProps = {
   answerId: string // POST .../audio path param
   hasAudio: boolean // from GET session has_audio; true after a successful upload (or a previous visit)
   disabled?: boolean // true while text evaluate is in flight or the session is abandoned
-  onUploaded: () => void // parent refetches the session so has_audio flips without a second poller
+  onUploaded: (body: AudioUploadOut) => void // parent stores async_job_id and refetches has_audio
 }
 
 // True when this browser claims MediaRecorder + the Opus/WebM mime the backend accepts.
@@ -208,7 +209,7 @@ export function AudioRecorder({ sessionId, answerId, hasAudio, disabled = false,
     setPercent(0) // reset the bar
     try {
       const file = new File([blob], "answer.webm", { type: "audio/webm" }) // field name is applied in uploadAnswerAudio
-      await uploadAnswerAudio(sessionId, answerId, file, (next) => {
+      const body = await uploadAnswerAudio(sessionId, answerId, file, (next) => {
         if (mountedRef.current) {
           setPercent(next) // live bar while bytes leave the browser
         }
@@ -216,7 +217,7 @@ export function AudioRecorder({ sessionId, answerId, hasAudio, disabled = false,
       if (mountedRef.current) {
         setUploadedHere(true) // local success copy
         setUploading(false) // unfreeze
-        onUploaded() // parent GET /interviews/{id} so has_audio is true
+        onUploaded(body) // parent polls GET /jobs/{async_job_id} then GET session for transcript
       }
     } catch (caught) {
       if (!mountedRef.current) {
@@ -248,8 +249,8 @@ export function AudioRecorder({ sessionId, answerId, hasAudio, disabled = false,
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-muted-foreground">
-        Optional recording for later transcription. Submitting text is what scores the answer. Target Chromium; capture
-        is <code>audio/webm;codecs=opus</code>.
+        Optional recording. Upload queues transcription (ffmpeg + Whisper). Submitting text is what scores the answer.
+        Target Chromium; capture is <code>audio/webm;codecs=opus</code>.
       </p>
       <canvas
         ref={canvasRef}

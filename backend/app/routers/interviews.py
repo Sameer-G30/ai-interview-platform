@@ -1,9 +1,9 @@
 """`/interviews/*` endpoints: candidate-only session start, owner-only GET, text submit, audio blob.
 
-No LLM runs inline here. `POST /interviews` inserts a scheduled session and enqueues
+No LLM or Whisper runs inline here. `POST /interviews` inserts a scheduled session and enqueues
 `interview_generate`. `POST .../answers/{id}` stores `answer_text` and enqueues `interview_evaluate`.
-`POST .../answers/{id}/audio` writes `audio_path` only (transcript stays null; no Whisper this phase).
-The worker calls `ml.llm` inside `asyncio.to_thread`. Poll progress with the existing `GET /jobs/{id}`.
+`POST .../answers/{id}/audio` writes `audio_path` and enqueues `transcribe` (ffmpeg + faster-whisper
+in the worker). Transcript stays null until that worker finishes. Poll progress with GET /jobs/{id}.
 """
 
 import uuid  # path params for session_id / answer_id; resume_id / job_id in the start body
@@ -46,7 +46,11 @@ from app.schemas.interviews import (  # request/response contracts
 )
 from app.services.resume_selection import resolve_parsed_resume  # same 404/409 rules as GET /matches
 from app.workers.enqueue import EnqueueFailedError, enqueue_job  # insert queued async_jobs row + Redis enqueue
-from app.workers.job_types import JOB_TYPE_INTERVIEW_EVALUATE, JOB_TYPE_INTERVIEW_GENERATE  # plain string job types
+from app.workers.job_types import (  # plain string job types
+    JOB_TYPE_INTERVIEW_EVALUATE,
+    JOB_TYPE_INTERVIEW_GENERATE,
+    JOB_TYPE_TRANSCRIBE,
+)
 
 router = APIRouter(prefix="/interviews", tags=["interviews"])  # every route here lives under /interviews/...
 
@@ -191,20 +195,22 @@ async def submit_answer(
 
 
 @router.post("/{session_id}/answers/{answer_id}/audio", response_model=AudioUploadOut)
-@limiter.limit("20/minute")  # disk write + possible overwrite; same bucket as text submit
+@limiter.limit("20/minute")  # disk write + transcribe enqueue; same bucket as text submit
 async def upload_answer_audio(
     request: Request,  # required so slowapi can key the limit on client IP
     session_id: uuid.UUID,
     answer_id: uuid.UUID,
     file: UploadFile = File(...),  # multipart field name is `file`, matching POST /resumes
     session: AsyncSession = Depends(get_db_session),
+    redis: ArqRedis = Depends(get_arq_redis),
     settings: Settings = Depends(get_settings),
     current_user: User = Depends(require_candidate),
 ) -> AudioUploadOut:
-    """Store a Chromium MediaRecorder WebM blob on `audio_path`. Does not enqueue evaluate or run Whisper.
+    """Store a Chromium MediaRecorder WebM blob and enqueue `transcribe`. Does not enqueue evaluate.
 
     Text submit remains the only path that queues `interview_evaluate` (the judge needs `answer_text`).
-    Transcript stays NULL until Phase 11. Retry overwrites the same file. Abandoned sessions 409.
+    Retry overwrites the same file, clears transcript/metrics, and re-enqueues so they cannot stay stale.
+    Abandoned sessions 409. Completed sessions may still upload (later transcription).
     """
     interview = await session.get(InterviewSession, session_id)
     if interview is None or interview.user_id != current_user.id:
@@ -230,6 +236,23 @@ async def upload_answer_audio(
 
     destination = _audio_storage_path(settings, interview.id, answer.id)
     destination.write_bytes(contents)  # overwrite on retry so a second capture replaces the first blob
-    answer.audio_path = str(destination)  # Phase 11 Whisper will read this; transcript stays null
-    await session.commit()  # persist the path; no ARQ job — audio is storage only this phase
-    return AudioUploadOut(answer_id=answer.id, has_audio=True)
+    answer.audio_path = str(destination)  # worker reads this path; do not put it in JSON
+    answer.transcript = None  # stale Whisper text must not survive an overwrite
+    answer.speech_metrics = None  # stale word timings / fluency must not survive an overwrite
+    await session.commit()  # persist the path before Redis has the transcribe message
+
+    try:
+        job = await enqueue_job(
+            session,
+            redis,
+            job_type=JOB_TYPE_TRANSCRIBE,
+            user_id=current_user.id,
+            payload={"answer_id": str(answer.id), "session_id": str(interview.id)},
+        )
+    except EnqueueFailedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="could not enqueue transcription",
+        ) from exc  # blob stays on disk; a retry overwrite re-enqueues
+
+    return AudioUploadOut(answer_id=answer.id, has_audio=True, async_job_id=job.id)

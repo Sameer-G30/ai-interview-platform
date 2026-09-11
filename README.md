@@ -1,6 +1,6 @@
 # AI Interview Intelligence Platform
 
-Status: **Phase 10 of 15 complete (frontend-interview)**. Full architecture diagram, seed/demo scripts, and
+Status: **Phase 11 of 15 complete (speech-pipeline)**. Full architecture diagram, seed/demo scripts, and
 deployment profile land in the hardening phase per the build plan.
 
 ## What this is
@@ -338,6 +338,47 @@ Frontend `npm run lint` (existing shadcn oxlint warnings only) and `npm run buil
 no `ml/scoring` weights, no ranking/comparison/reports/admin, no WebSockets, no recruiter
 interview dashboard.
 
+### Phase 11 — speech pipeline (ASR / VAD / prosody / dual fluency)
+
+- `ml/speech/` (shared by the `transcribe` worker and, later, the research harness):
+  - `asr.py` — **faster-whisper** (not openai-whisper) with word timestamps. Chromium
+  `audio/webm;codecs=opus` is transcoded with **ffmpeg** to 16 kHz mono WAV first (plan Part 5).
+  The Whisper model is loaded lazily inside the worker and **unloaded after each job** so it does
+  not co-reside with the 7–8B judge on 8GB VRAM.
+  - `vad.py` — **Silero VAD** pause segmentation (internal gaps only). Separate from Whisper's
+  `vad_filter`.
+  - `prosody.py` — **parselmouth** (Praat) pitch (Hz) and intensity (dB).
+  - `fluency.py` — speech rate, articulation rate, mean pause duration, pause ratio, filler rate.
+  **Both** transcript-derived (word-timestamp gaps + um/uh/`you know`) and acoustic-derived
+  (VAD voiced time + unaligned short bursts as a filler proxy) are always emitted.
+  - `__init__.py` exposes `run_speech_pipeline(file_path) -> SpeechPipelineResult`.
+- **Upload path**: `POST /interviews/{session_id}/answers/{answer_id}/audio` still writes
+  `audio_path` (overwrite on retry) and still does **not** enqueue `interview_evaluate`. It now
+  enqueues `transcribe` (plain string job type) and returns `{ answer_id, has_audio, async_job_id }`.
+  Re-upload clears `transcript` / `speech_metrics` and re-enqueues so they cannot stay stale.
+- **Worker** (`app/workers/tasks.py::transcribe`, 180s timeout; demo/resume stay at 60s): skip
+  (succeed with `skipped: true`) when `audio_path` is null — text-only answers stay valid.
+  Success writes `answers.transcript` (plain text) and `answers.speech_metrics` (JSON: words,
+  dual fluency, VAD, prosody). Failure leaves those null and records a short `async_jobs.error`;
+  the session is **not** abandoned. SHA256 of the blob skips a stale write if the file was
+  replaced mid-job.
+- **GET `/interviews/{id}`** exposes `transcript` and `speech_metrics`. `has_audio` stays derived;
+  `audio_path` is still excluded from JSON. Owner-only 404 is unchanged.
+- **Alembic** `b7e4c19a5d03` adds nullable JSON `answers.speech_metrics`. No new ENUM.
+  `transcribe` is a plain string like `resume_parse`.
+- **Frontend**: the Phase 10 session UI stays. After upload, the existing `useJobStatus` poller
+  shows transcribe queued/running/failed and a short "Transcript ready" snippet. No transcript
+  viewer, no fluency metric cards (that's `frontend-analysis`).
+- **Tests**: `test_ml_speech.py` (fluency math, no GPU) and `test_speech.py` (enqueue, succeed,
+  fail, owner-only poll, overwrite, skip-when-no-audio, skippable live smoke). Default suite
+  monkeypatches `_run_speech_pipeline`. Live smoke skips (never fails) if ffmpeg, CUDA, or
+  cached Whisper weights are missing — it does not download models. On this machine, with
+  `/usr/bin/ffmpeg` and cached `Systran/faster-whisper-medium.en`, the live smoke **passed**
+  (full suite **114 passed, 0 skipped**).
+- **Non-goals this phase**: no transcript viewer UI, no fluency cards beyond thin status, no
+  `ml/scoring` weights / `scores.composite_score`, no ranking/comparison/reports/admin, no
+  WebSockets, no recruiter interview dashboard, no second LLM client, no openai-whisper.
+
 
 
 ## Local dev setup
@@ -439,7 +480,7 @@ uv run alembic downgrade -1      # rolls back Phase 2's table migration cleanly
 uv run alembic upgrade head      # re-applies it; confirms no drift either direction
 uv run alembic check             # confirms models == live schema, no missing migration
 
-# Full test suite (health + auth + jobs + resumes + matching + ml.llm + interviews + audio upload), against live Postgres and Redis
+# Full test suite (health + auth + jobs + resumes + matching + ml.llm + interviews + speech), against live Postgres and Redis
 uv run pytest -q
 ```
 
@@ -604,7 +645,7 @@ curl -s http://localhost:8000/jobs/<ASYNC_JOB_ID> \
 curl -s http://localhost:8000/interviews/<SESSION_ID> \
   -H "Authorization: Bearer <CANDIDATE_ACCESS_TOKEN>"
 
-# Submit a text answer (audio_path/transcript stay null this phase)
+# Submit a text answer (audio is a separate upload; evaluate still needs answer_text)
 curl -s -X POST http://localhost:8000/interviews/<SESSION_ID>/answers/<ANSWER_ID> \
   -H "Authorization: Bearer <CANDIDATE_ACCESS_TOKEN>" \
   -H "Content-Type: application/json" \
@@ -623,13 +664,27 @@ the evaluate worker appends one more `answers` row in the **same** job. A score 
 follow-ups, even if `improvements` is non-empty. Swap `8000` for `8001` if that is the port you
 bound. Recruiter `POST /interviews` is 403. GET of someone else's session id is 404.
 
-Optional Phase 10 audio blob (does **not** enqueue evaluate; `transcript` stays null):
+Optional audio + transcribe (does **not** enqueue evaluate; text submit is still what scores):
 
 ```bash
+# ffmpeg must be on PATH (or set FFMPEG_PATH). Worker: `uv run arq app.workers.settings.WorkerSettings`
 curl -s -X POST http://localhost:8000/interviews/<SESSION_ID>/answers/<ANSWER_ID>/audio \
   -H "Authorization: Bearer <CANDIDATE_ACCESS_TOKEN>" \
   -F "file=@/tmp/answer.webm;type=audio/webm"
+# -> {"answer_id": "...", "has_audio": true, "async_job_id": "..."}
+
+# Poll transcribe (same GET /jobs/{id} as resume parse / generate / evaluate)
+curl -s http://localhost:8000/jobs/<TRANSCRIBE_ASYNC_JOB_ID> \
+  -H "Authorization: Bearer <CANDIDATE_ACCESS_TOKEN>"
+
+# Once succeeded, GET the session for transcript + speech_metrics (audio_path is not in JSON)
+curl -s http://localhost:8000/interviews/<SESSION_ID> \
+  -H "Authorization: Bearer <CANDIDATE_ACCESS_TOKEN>"
 ```
+
+A local Chromium capture under `data/blobs/interviews/` (gitignored) can be uploaded the same way.
+Safari is not supported. Re-upload overwrites the webm and re-enqueues so transcript/metrics cannot
+stay stale. Text-only answers skip transcribe (`skipped: true`) and still complete the session.
 
 
 
@@ -662,23 +717,25 @@ Manual UI checks (with `npm run dev` and the API on `:8001`):
 10. Sign back in as the candidate whose resume you parsed in step 8, open **Matches** in the sidebar. You should see the posting from step 9 (if still active) with a similarity-score bar and skill chips split into "You have" (matched) and "Skill gap" (missing). A candidate with no parsed resume yet should see the "no parsed resume yet" empty state with a link back to `/candidate/resume` instead of an error.
 11. From a match card, click **Start interview** (or open **Interview** and click **Start practice interview**). You should land on the session URL with `?job=` and see generate status queued → running → succeeded, then questions. Do not expect the question list to update while generate is still queued. A candidate with no parsed resume who clicks practice start should see the upload CTA (404), not a crash. A generate failure shows the abandoned state.
 12. Type an answer (min 1 character) and click **Submit answer**. Evaluate status should poll the same way as generate (`?eval=`). When it succeeds, the score (0–5), rationale, strengths, and improvements appear. If the score is 0–2 on an original question, a follow-up row is appended — click **Next** after the session refetch; do not assume the question list is fixed at generate time. Re-submitting the same question is 409. A completed session stays readable.
-13. Optional: in Chromium, click **Start recording**, allow the microphone, speak, **Stop**, then **Upload recording**. The level meter / waveform should move while recording. Retry overwrites the stored blob. Safari is not supported. Audio upload does **not** score the answer; text submit is what enqueues the judge. Whisper is Phase 11.
+13. Optional: in Chromium, click **Start recording**, allow the microphone, speak, **Stop**, then **Upload recording**. The level meter / waveform should move while recording. Retry overwrites the stored blob and re-queues transcribe. Safari is not supported. Audio upload does **not** score the answer; text submit is what enqueues the judge. Transcribe status should move queued → running → succeeded, then a short "Transcript ready" snippet appears. There is no word-timing viewer or fluency-metric dashboard this phase.
 
 `GET /` on the API still 404s; use `/health` or `/docs` (and the port you actually bound).
 
-### ml/ — resume + matching + LLM provider + interview engine; speech/scoring are still stubs
+### ml/ — resume + matching + LLM provider + interview engine + speech; scoring is still a stub
 
 `ml/resume/` (parsing, ESCO skill matching, ATS scoring), `ml/matching/` (SBERT embeddings,
 cosine similarity, skill-gap diff, TF-IDF baseline), `ml/llm/` (Ollama / OpenAI-compatible
-provider, Pydantic JSON, versioned 0–5 rubrics, `GeneratedQuestions` / `InterviewQuestion`), and
-`ml/interview/` (follow-up rule + prompt builders) are implemented. Resume/matching are covered by
+provider, Pydantic JSON, versioned 0–5 rubrics, `GeneratedQuestions` / `InterviewQuestion`),
+`ml/interview/` (follow-up rule + prompt builders), and `ml/speech/` (faster-whisper, Silero VAD,
+parselmouth, dual fluency) are implemented. Resume/matching are covered by
 `backend/tests/test_resumes.py`, `test_postings.py`, `test_matches.py` (via the workers), and
 `test_ml_matching.py`. The LLM library is covered by `backend/tests/test_ml_llm.py` (MockTransport
 plus a skippable live-Ollama smoke). The interview engine is covered by `test_ml_interview.py` and
-`test_interviews.py` (fake provider + one skippable live generate+evaluate smoke, plus Phase 10
-audio-upload cases). `ml/{speech,scoring}/` are still empty package stubs.
+`test_interviews.py` (fake provider + one skippable live generate+evaluate smoke, plus audio-upload
+enqueue). Speech is covered by `test_ml_speech.py` and `test_speech.py` (monkeypatched pipeline +
+one skippable live ffmpeg/Whisper smoke). `ml/scoring/` is still an empty package stub.
 
-You can also exercise `ml/resume`, `ml/matching`, and `ml/llm` directly, without the API/worker:
+You can also exercise `ml/resume`, `ml/matching`, `ml/llm`, and `ml/speech` directly, without the API/worker:
 
 ```bash
 uv run python -c "
@@ -692,6 +749,16 @@ from ml.matching.embed import embed_texts
 from ml.matching.similarity import cosine_similarity
 a, b = embed_texts(['Python backend engineer', 'Marine biologist'])
 print(cosine_similarity(a, b))
+"
+```
+
+```bash
+# Requires ffmpeg on PATH and cached faster-whisper weights. Do not run this if the GPU is busy with Ollama.
+uv run python -c "
+from ml.speech import run_speech_pipeline
+result = run_speech_pipeline('data/blobs/interviews/<session_id>/<answer_id>.webm')
+print(result.transcript)
+print(result.fluency_transcript.speech_rate_wpm, result.fluency_acoustic.speech_rate_wpm)
 "
 ```
 
