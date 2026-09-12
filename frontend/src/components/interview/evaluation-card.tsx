@@ -10,6 +10,13 @@ export function EvaluationCard({ evaluation }: { evaluation: unknown }) {
   const percent = (clamped / 5) * 100 // 0–100 for the score bar
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border p-3" data-testid="evaluation-card">
+      <div className="flex flex-col gap-1">
+        <p className="text-sm font-medium">Per-answer feedback</p>
+        <p className="text-xs text-muted-foreground">
+          Judge payload from answers.evaluation. Grammar / vocabulary / relevance are not a second NLP pipeline this
+          phase — they stay in the rationale, strengths, and improvements below.
+        </p>
+      </div> {/* keep score + coaching visible; do not hide this card */}
       <div className="flex items-baseline justify-between gap-2">
         <p className="text-sm font-medium">Score</p>
         <p className="text-sm tabular-nums" data-testid="evaluation-score">

@@ -6,14 +6,17 @@ import { fetchInterview, interviewQueryKeys, submitAnswer } from "@/api/intervie
 import { ApiError } from "@/api/types" // poll / GET / submit failures
 import type { AnswerOut, AudioUploadOut, InterviewSessionOut } from "@/api/types" // question rows + session status
 import { AudioRecorder } from "@/components/interview/audio-recorder" // MediaRecorder capture + upload
-import { EvaluationCard } from "@/components/interview/evaluation-card" // score 0–5 + rationale
+import { EvaluationCard } from "@/components/interview/evaluation-card" // score 0–5 + rationale; keep visible
+import { FluencyPanel } from "@/components/interview/fluency-panel" // dual fluency + prosody from speech_metrics
 import { InterviewJobStatus } from "@/components/interview/interview-job-status" // queued/running/failed copy
 import { QuestionNav } from "@/components/interview/question-nav" // previous / next by question_order
+import { TranscriptViewer } from "@/components/interview/transcript-viewer" // full transcript + word timings
 import { Button } from "@/components/ui/button" // submit + back links
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card" // page chrome
 import { Skeleton } from "@/components/ui/skeleton" // pending generate placeholder
 import { Textarea } from "@/components/ui/textarea" // text answer; judge needs answer_text
 import { useJobStatus } from "@/hooks/use-job-status" // existing poller; do not write a second one
+import { asSpeechMetrics, resolveSpeechAnalysisState } from "@/lib/speech-metrics" // defensive parse; no invented rates
 
 // First unanswered row, or the last row if every question already has text (completed / viewing history).
 function firstUnansweredIndex(answers: AnswerOut[]): number {
@@ -24,7 +27,7 @@ function firstUnansweredIndex(answers: AnswerOut[]): number {
   return open // generate just finished, or a follow-up was appended
 }
 
-// Candidate session screen: poll generate, then GET /interviews/{id}; submit text; poll evaluate; show follow-ups.
+// Candidate session screen: poll generate, then GET /interviews/{id}; submit text; poll evaluate; show analysis.
 export function CandidateInterviewSessionPage() {
   const queryClient = useQueryClient() // refetch the session after evaluate succeeds (follow-up may appear)
   const { sessionId } = useParams() // /candidate/interview/:sessionId
@@ -61,6 +64,17 @@ export function CandidateInterviewSessionPage() {
   const transcribeQuery = useJobStatus(transcribeJobId) // disabled when this question has no in-memory job id
   const transcribeStatus = transcribeQuery.data?.status // queued | running | succeeded | failed | undefined
   const transcribeTerminal = transcribeStatus === "succeeded" || transcribeStatus === "failed" // then refetch session
+  const speechMetrics = current !== undefined ? asSpeechMetrics(current.speech_metrics) : null // null until transcribe writes JSON
+  const speechState =
+    current !== undefined
+      ? resolveSpeechAnalysisState({
+          hasAudio: current.has_audio, // derived; audio_path is not in JSON
+          transcript: current.transcript, // null for text-only / pending / failed
+          metrics: speechMetrics, // parsed dual-fluency payload
+          transcribeJobId, // in-memory per-answer id; not ?transcribe= in the URL
+          transcribeStatus, // same GET /jobs/{id} poller as generate/evaluate
+        })
+      : "text-only" // no current row yet
 
   useEffect(() => {
     if (session === undefined || session.answers.length === 0 || indexReady) {
@@ -70,13 +84,15 @@ export function CandidateInterviewSessionPage() {
     setIndexReady(true) // subsequent refetches (evaluate) keep the current index
   }, [session, indexReady])
 
+  const currentId = current?.id // depend on the row id, not the answers[] object identity
+  const currentText = current?.answer_text ?? "" // submitted text, or empty for an unanswered row
   useEffect(() => {
-    if (current === undefined) {
+    if (currentId === undefined) {
       setDraft("") // no question yet
       return // nothing to hydrate
     }
-    setDraft(current.answer_text ?? "") // submitted text is read-only; unanswered starts empty
-  }, [current]) // switch question or a refetch that now has answer_text
+    setDraft(currentText) // submitted text is read-only; unanswered starts empty (must clear when returning to Q2)
+  }, [currentId, currentText]) // index change reuses the same answers[] objects, so id/text are the real keys
 
   useEffect(() => {
     if (evaluateJobId === null || !evaluateTerminal || sessionId === undefined) {
@@ -174,12 +190,13 @@ export function CandidateInterviewSessionPage() {
     (generateQuery.isPending && generateJobId !== null && !generateTerminal)
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6">
       <div className="flex flex-col gap-2">
         <h1 className="text-2xl font-semibold">Interview session</h1>
         <p className="text-muted-foreground">
-          Generate and evaluate jobs poll GET /jobs/{"{id}"}. Questions come from GET /interviews/{"{id}"} after generate
-          finishes. A follow-up may appear after a score of 0–2.
+          Generate, evaluate, and transcribe jobs poll GET /jobs/{"{id}"}. Questions come from GET /interviews/{"{id}"}{" "}
+          after generate finishes. A follow-up may appear after a score of 0–2. After audio transcription, this screen
+          shows the full transcript, word timings, and both fluency arms — it does not invent metrics in the browser.
         </p>
       </div>
       <Card>
@@ -315,17 +332,8 @@ export function CandidateInterviewSessionPage() {
                 pollError={transcribePollError}
               />
             ) : null}
-            {current.transcript !== null && current.transcript.length > 0 ? (
-              <p className="text-sm text-muted-foreground" data-testid="transcript-ready">
-                Transcript ready: {current.transcript.length > 240 ? `${current.transcript.slice(0, 240)}…` : current.transcript}
-              </p>
-            ) : null}
-            {current.has_audio && current.transcript === null && transcribeStatus !== "failed" && transcribeJobId === null ? (
-              <p className="text-sm text-muted-foreground">
-                Recording stored. Reload after the worker finishes to see the transcript, or re-upload to queue transcribe
-                again.
-              </p>
-            ) : null}
+            <TranscriptViewer transcript={current.transcript} metrics={speechMetrics} state={speechState} />
+            <FluencyPanel metrics={speechMetrics} state={speechState} /> {/* dual arms; empty when transcript is null */}
           </CardContent>
         </Card>
       ) : null}

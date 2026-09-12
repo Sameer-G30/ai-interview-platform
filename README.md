@@ -1,6 +1,6 @@
 # AI Interview Intelligence Platform
 
-Status: **Phase 11 of 15 complete (speech-pipeline)**. Full architecture diagram, seed/demo scripts, and
+Status: **Phase 12 of 15 complete (frontend-analysis)**. Full architecture diagram, seed/demo scripts, and
 deployment profile land in the hardening phase per the build plan.
 
 ## What this is
@@ -379,6 +379,35 @@ interview dashboard.
   `ml/scoring` weights / `scores.composite_score`, no ranking/comparison/reports/admin, no
   WebSockets, no recruiter interview dashboard, no second LLM client, no openai-whisper.
 
+### Phase 12 — analysis UI (transcript viewer + dual fluency + existing evaluation)
+
+- **Same session screen** (`/candidate/interview/:sessionId`). Did **not** add a new HTTP prefix,
+  a recruiter analysis page, or a second poller. Generate / evaluate / transcribe still use
+  `useJobStatus` + `GET /jobs/{id}`. Session-page transcribe ids stay in-memory per answer.
+- **Transcript viewer** (`frontend/src/components/interview/transcript-viewer.tsx`): replaces the
+  truncated "Transcript ready" snippet. Shows the **full** `answers.transcript` plus
+  `speech_metrics.words` (start / end / probability). Tap a word for timings (hover-only is not
+  enough on a phone). Empty copy covers text-only answers, transcribe still running, transcribe
+  failed, and "recording stored but the poller is gone" — the UI does not invent a transcript.
+- **Fluency panel** (`frontend/src/components/interview/fluency-panel.tsx`): metric cards from
+  both `fluency_transcript` and `fluency_acoustic` (speech rate, articulation rate, mean pause,
+  pause ratio, filler rate/count) plus a short prosody summary (pitch Hz / intensity dB). Both
+  arms stay visible; the SPA does not pick a winner. Empty/null metrics when there is no audio
+  or transcribe failed — **no placeholder zeros**.
+- **Per-answer feedback**: existing `EvaluationCard` stays visible (score, rationale, strengths,
+  improvements). Grammar / vocabulary / relevance are **not** a new NLP/LLM pipeline; they stay
+  inside that judge payload. No `ml/scoring`, no `scores.composite_score`, no ranking/comparison
+  / PDF reports.
+- **No new Alembic revision** — analysis reads `GET /interviews/{id}`. `alembic check` should
+  still report no drift (`b7e4c19a5d03` remains head).
+- **Tests**: no new backend tests this phase (114 pytest stay green). Frontend `npm run lint`
+  (existing shadcn oxlint warnings only) and `npm run build`. `npm run test` still does not exist
+  (hardening).
+- **Non-goals this phase**: no `ml/scoring` weights / composite score, no ranking/comparison/
+  WeasyPrint, no dashboards, no admin, no WebSockets, no recruiter interview dashboard, no
+  second LLM client, no openai-whisper, no new Whisper model download, no rebuild of `ml/speech`
+  or the transcribe worker.
+
 
 
 ## Local dev setup
@@ -691,10 +720,11 @@ stay stale. Text-only answers skip transcribe (`skipped: true`) and still comple
 ### Frontend — lint, build, auth, resume, matches, and interview walkthrough
 
 The Vite+shadcn scaffold has the shell, candidate resume upload/results, Matches, recruiter Jobs,
-and the candidate interview session (text + optional MediaRecorder). Backend, Postgres, Redis, the
-ARQ worker, and a reachable LLM (local Ollama by default) must be up for the interview steps. CORS
-allows `FRONTEND_ORIGIN` and its `127.0.0.1` twin (this machine: `http://localhost:5174`). See
-**Ports, CORS, and sharing the machine with another app** above.
+and the candidate interview session (text + optional MediaRecorder + transcript viewer + dual
+fluency cards). Backend, Postgres, Redis, the ARQ worker, and a reachable LLM (local Ollama by
+default) must be up for the interview steps. CORS allows `FRONTEND_ORIGIN` and its `127.0.0.1`
+twin (this machine: `http://localhost:5174`). See **Ports, CORS, and sharing the machine with
+another app** above.
 
 ```bash
 cd "Project-2 MLIS/ai-interview-platform/frontend"
@@ -717,7 +747,7 @@ Manual UI checks (with `npm run dev` and the API on `:8001`):
 10. Sign back in as the candidate whose resume you parsed in step 8, open **Matches** in the sidebar. You should see the posting from step 9 (if still active) with a similarity-score bar and skill chips split into "You have" (matched) and "Skill gap" (missing). A candidate with no parsed resume yet should see the "no parsed resume yet" empty state with a link back to `/candidate/resume` instead of an error.
 11. From a match card, click **Start interview** (or open **Interview** and click **Start practice interview**). You should land on the session URL with `?job=` and see generate status queued → running → succeeded, then questions. Do not expect the question list to update while generate is still queued. A candidate with no parsed resume who clicks practice start should see the upload CTA (404), not a crash. A generate failure shows the abandoned state.
 12. Type an answer (min 1 character) and click **Submit answer**. Evaluate status should poll the same way as generate (`?eval=`). When it succeeds, the score (0–5), rationale, strengths, and improvements appear. If the score is 0–2 on an original question, a follow-up row is appended — click **Next** after the session refetch; do not assume the question list is fixed at generate time. Re-submitting the same question is 409. A completed session stays readable.
-13. Optional: in Chromium, click **Start recording**, allow the microphone, speak, **Stop**, then **Upload recording**. The level meter / waveform should move while recording. Retry overwrites the stored blob and re-queues transcribe. Safari is not supported. Audio upload does **not** score the answer; text submit is what enqueues the judge. Transcribe status should move queued → running → succeeded, then a short "Transcript ready" snippet appears. There is no word-timing viewer or fluency-metric dashboard this phase.
+13. Optional: in Chromium, click **Start recording**, allow the microphone, speak, **Stop**, then **Upload recording**. The level meter / waveform should move while recording. Retry overwrites the stored blob and re-queues transcribe. Safari is not supported. Audio upload does **not** score the answer; text submit is what enqueues the judge. Transcribe status should move queued → running → succeeded, then the **full transcript** (not a truncated snippet), **word timings** (tap a token for start/end/probability), and **both fluency arms** plus a short prosody summary appear. Text-only answers show empty transcript/fluency copy instead of invented zeros. Switch questions: evaluation, transcript, and fluency stay per-answer and must not leak onto the next row. Recruiter still has no Interview / analysis screen.
 
 `GET /` on the API still 404s; use `/health` or `/docs` (and the port you actually bound).
 
@@ -727,7 +757,8 @@ Manual UI checks (with `npm run dev` and the API on `:8001`):
 cosine similarity, skill-gap diff, TF-IDF baseline), `ml/llm/` (Ollama / OpenAI-compatible
 provider, Pydantic JSON, versioned 0–5 rubrics, `GeneratedQuestions` / `InterviewQuestion`),
 `ml/interview/` (follow-up rule + prompt builders), and `ml/speech/` (faster-whisper, Silero VAD,
-parselmouth, dual fluency) are implemented. Resume/matching are covered by
+parselmouth, dual fluency) are implemented. Phase 12 is UI on that speech payload; it does not
+change `ml/speech`. Resume/matching are covered by
 `backend/tests/test_resumes.py`, `test_postings.py`, `test_matches.py` (via the workers), and
 `test_ml_matching.py`. The LLM library is covered by `backend/tests/test_ml_llm.py` (MockTransport
 plus a skippable live-Ollama smoke). The interview engine is covered by `test_ml_interview.py` and

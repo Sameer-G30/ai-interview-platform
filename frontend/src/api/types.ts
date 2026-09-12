@@ -179,7 +179,7 @@ export type WordTimestampOut = {
   probability: number // 0–1 per-word confidence
 }
 
-// One fluency arm (transcript-derived or acoustic-derived). The analysis UI picks later.
+// One fluency arm (transcript-derived or acoustic-derived). The analysis UI shows both; it does not pick a winner.
 export type FluencyMetricsOut = {
   speech_rate_wpm: number // words / total_duration_s * 60
   articulation_rate_wpm: number // words / speaking_duration_s * 60
