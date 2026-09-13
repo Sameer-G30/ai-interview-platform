@@ -13,7 +13,17 @@ import app.models  # noqa: F401 - import side-effect registers every ORM model o
 from app.core.config import get_settings  # cached, typed Settings object read from env/.env
 from app.core.rate_limit import limiter  # shared Limiter instance, also imported by app.routers.auth
 from app.core.redis import close_arq_pool, create_arq_pool  # ARQ Redis pool used to enqueue jobs
-from app.routers import auth, health, interviews, jobs, matches, postings, resumes  # every mounted router
+from app.routers import (  # every mounted router
+    auth,
+    health,
+    interviews,
+    jobs,
+    matches,
+    postings,
+    reports,
+    resumes,
+    scores,
+)
 
 
 @asynccontextmanager
@@ -68,3 +78,7 @@ app.include_router(postings.router)
 app.include_router(matches.router)
 # Mount the interview-engine router; candidate-only session start/submit, owner-only GET.
 app.include_router(interviews.router)
+# Mount scoring reads; GET /scores/{id} owner-only, ranking/compare recruiter-only. No recompute on GET.
+app.include_router(scores.router)
+# Mount WeasyPrint PDF download; same ownership as GET /scores/{id}. Blobs gitignored under storage_root.
+app.include_router(reports.router)

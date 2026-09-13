@@ -25,6 +25,14 @@ from ml.llm import (  # Phase 8 provider; constructed inside the handler, never 
 )
 from ml.matching.embed import embed_text  # lazy-loaded SBERT singleton, used for both resumes and postings
 from ml.resume import ResumeParseError, run_resume_pipeline  # PyMuPDF/pypdfium2 + spaCy + ESCO + ATS, one call
+from ml.scoring import (  # Phase 13 arithmetic aggregator; never calls Ollama/Whisper
+    AnswerSignals,  # per-answer evaluation + speech_metrics for aggregate_session
+    ScoringConfigError,  # invalid/un-renormalizable weights; evaluate still commits
+    aggregate_session,  # writes reconstructable attribution; no GPU
+)
+from ml.scoring import (
+    config_from_settings as scoring_config_from_settings,  # SCORE_WEIGHT_* from Settings, not os.environ
+)
 from ml.speech import (  # Phase 11 pipeline; constructed inside the handler, never at FastAPI import
     SpeechConfig,
     SpeechError,
@@ -33,6 +41,7 @@ from ml.speech import (  # Phase 11 pipeline; constructed inside the handler, ne
 )
 from ml.speech.config import config_from_settings as speech_config_from_settings  # Settings -> SpeechConfig
 from sqlalchemy import func, select  # max(question_order) when appending a follow-up row
+from sqlalchemy.ext.asyncio import AsyncSession  # type of the session _upsert_completed_score writes into
 
 from app.core.config import get_settings  # Settings -> LLMConfig via config_from_settings (not os.environ)
 from app.core.db import AsyncSessionLocal  # worker opens its own sessions; it is not a request
@@ -41,6 +50,7 @@ from app.models.enums import InterviewSessionStatus, ResumeStatus  # session + r
 from app.models.interview_session import InterviewSession  # row generate/evaluate advance
 from app.models.job import Job  # row posting_embed loads and writes embedding onto; interview reads title/skills
 from app.models.resume import Resume  # row this task advances through its lifecycle
+from app.models.score import Score  # one composite row per completed session (unique session_id)
 from app.workers.tracked import run_tracked_job  # shared running/succeeded/failed status wrapper
 
 logger = logging.getLogger(__name__)  # module logger, mirrors app.workers.tracked's convention
@@ -229,6 +239,50 @@ def _evaluate_and_maybe_followup_sync(
         provider.close()  # unload keep_alive=0 still happens per backend call; close the HTTP client here
 
 
+async def _upsert_completed_score(db: AsyncSession, interview: InterviewSession) -> dict | None:
+    """Write/overwrite the Score row for a session that just flipped to completed.
+
+    Same-pass as follow-up / resume embedding: when GET /jobs/{id} for evaluate is succeeded and
+    the session is completed, GET /scores/{id} already has the composite. Abandoned sessions never
+    call this. Arithmetic only — no Whisper, no judge. Returns a small dict for async_jobs.result,
+    or None if weights/signals could not renormalize (session still completes).
+    """
+    resume = await db.get(Resume, interview.resume_id)  # ATS lives on the resume, not the session
+    answer_rows = (
+        await db.execute(select(Answer).where(Answer.session_id == interview.id).order_by(Answer.question_order))
+    ).scalars().all()  # include the row whose evaluation we just wrote
+    signals = [
+        AnswerSignals(
+            question_kind=row.question_kind,  # technical | behavioral; follow-ups keep their kind
+            evaluation=row.evaluation,  # may be null if an earlier evaluate failed
+            speech_metrics=row.speech_metrics,  # null on text-only; do not invent fluency
+        )
+        for row in answer_rows
+    ]
+    weights = scoring_config_from_settings(get_settings())  # SCORE_WEIGHT_* from Settings, not os.environ
+    try:
+        result = aggregate_session(
+            weights,
+            ats_score=resume.ats_score if resume is not None else None,  # omit resume if ATS is missing
+            answers=signals,  # already-loaded JSON; no ML
+        )
+    except ScoringConfigError:
+        logger.warning("session %s completed but scoring weights/signals could not renormalize", interview.id)
+        return None  # do not fail evaluate; the session is still completed
+    existing = await db.scalar(select(Score).where(Score.session_id == interview.id))  # unique session_id
+    values = result.column_values()  # Score columns minus session_id
+    if existing is None:
+        db.add(Score(session_id=interview.id, **values))  # first complete
+    else:
+        for column, value in values.items():
+            setattr(existing, column, value)  # evaluate ran again; overwrite in place
+    return {
+        "composite_score": result.composite_score,  # handy on GET /jobs/{id} without a second round-trip
+        "omitted": list(result.omitted),  # e.g. ["communication"] on text-only
+        "formula_version": result.attribution.get("formula_version"),  # scoring_v1
+    }
+
+
 async def _abandon_session(session_id: uuid.UUID) -> None:
     """Mark a session abandoned when generate fails so it cannot sit in scheduled forever."""
     async with AsyncSessionLocal() as session:
@@ -337,6 +391,7 @@ async def interview_evaluate(ctx: dict) -> dict:
                 raise RuntimeError(f"answer {answer_id} or session {session_id} disappeared")
             answer.evaluation = evaluation.model_dump()  # {score, rationale, strengths, improvements}
             follow_up_appended = False  # stays False unless we insert a new answers row below
+            score_payload: dict | None = None  # set only when this pass completes the session
             if follow_up is not None:
                 max_order = await session.scalar(
                     select(func.max(Answer.question_order)).where(Answer.session_id == session_id)
@@ -361,15 +416,20 @@ async def interview_evaluate(ctx: dict) -> dict:
                 if int(unanswered or 0) == 0:  # every current question has text; no new follow-up
                     interview.status = InterviewSessionStatus.COMPLETED
                     interview.completed_at = datetime.now(UTC)
+                    score_payload = await _upsert_completed_score(session, interview)  # same commit; not a third job
             session_status = interview.status.value  # copy before commit; expire_on_commit would lazy-load
             await session.commit()
-        return {
+        result_body = {
             "session_id": str(session_id),
             "answer_id": str(answer_id),
             "score": evaluation.score,
             "follow_up_appended": follow_up_appended,
             "session_status": session_status,  # in_progress or completed after this pass
         }
+        if score_payload is not None:
+            result_body["composite_score"] = score_payload["composite_score"]  # present only when we wrote a Score
+            result_body["omitted_signals"] = score_payload["omitted"]  # text-only omits communication
+        return result_body
 
     return await run_tracked_job(ctx, _handle)
 

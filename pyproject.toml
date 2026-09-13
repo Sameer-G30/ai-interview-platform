@@ -33,6 +33,7 @@ dependencies = [
     "faster-whisper>=1.1,<2",                   # ASR with word timestamps (CTranslate2); not openai-whisper
     "silero-vad>=5.1,<7",                       # pause segmentation for acoustic-derived fluency
     "praat-parselmouth>=0.4.5,<0.5",            # Praat bindings for pitch (Hz) and intensity (dB)
+    "weasyprint>=62,<67",                    # HTML→PDF reports (Part 0); needs system cairo/pango; does not depend on numpy 2.x
 ]
 
 [dependency-groups]
@@ -62,7 +63,7 @@ asyncio_mode = "auto"                           # lets pytest-asyncio run async 
 # specifically so that pooled asyncpg connections never get reused across two different event loops.
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["backend/tests"]                   # directory pytest searches for test modules
-pythonpath = [".", "backend"]                   # ensures `import app...` and `import ml...` resolve from repo root
+pythonpath = [".", "backend", "backend/tests"]     # `import app` / `import ml` from repo root; tests/ for shared fakes
 
 [build-system]
 requires = ["hatchling"]                        # build backend needed to make this a valid installable package

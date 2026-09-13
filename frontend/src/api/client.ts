@@ -25,7 +25,7 @@ export function getApiBaseUrl(): string {
     return raw.replace(/\/+$/, "") // "http://127.0.0.1:8001/" -> "http://127.0.0.1:8001"
   }
   if (import.meta.env.DEV) {
-    return "" // same-origin; Vite proxies /auth, /health, /jobs, /resumes, /postings, /matches, /interviews to uvicorn (avoids CORS)
+    return "" // same-origin; Vite proxies /auth, /health, /jobs, /resumes, /postings, /matches, /interviews, /scores, /reports to uvicorn (avoids CORS)
   }
   return "http://localhost:8000" // production-style default when no VITE_API_BASE_URL is set
 }
@@ -154,6 +154,51 @@ export async function apiFetch<T>(path: string, options: ApiRequestOptions = {})
     throw new ApiError(response.status, detailFromBody(body, fallback)) // UI displays .detail
   }
   return body as T // caller is responsible for the expected success shape
+}
+
+// Public GET of a binary body (WeasyPrint PDF). Same single-flight refresh as apiFetch; errors stay JSON.
+export async function apiBlob(path: string, options: ApiRequestOptions = {}): Promise<Blob> {
+  const auth = options.auth !== false // default to attaching the access token
+  const skipRefresh = options.skipRefresh === true // unused by report download; kept for symmetry
+  const firstTokens = getTokens() // may be null if the session was cleared
+
+  const send = async (accessToken: string | null): Promise<Response> => {
+    const headers = new Headers(options.headers) // copy extra headers (none today)
+    headers.set("Accept", "application/pdf") // report route returns application/pdf, errors still JSON
+    if (auth && accessToken !== null) {
+      headers.set("Authorization", `Bearer ${accessToken}`) // access JWT; refresh tokens never go here
+    }
+    const url = `${getApiBaseUrl()}${path.startsWith("/") ? path : `/${path}`}` // join origin + path
+    return fetch(url, {
+      method: options.method ?? "GET", // PDF download is GET
+      headers, // Accept / Authorization
+      credentials: "omit", // Bearer tokens, not cookies
+    })
+  }
+
+  let response: Response
+  try {
+    response = await send(auth ? (firstTokens?.accessToken ?? null) : null) // first attempt
+  } catch {
+    throw new ApiError(0, `could not reach the API at ${getApiBaseUrl() || window.location.origin}`) // network / CORS
+  }
+  if (response.status === 401 && auth && !skipRefresh) {
+    const refreshed = await refreshSession() // single-flight rotation of the opaque refresh token
+    if (refreshed) {
+      const retryTokens = getTokens() // pair written by refreshSession
+      try {
+        response = await send(retryTokens?.accessToken ?? null) // one retry
+      } catch {
+        throw new ApiError(0, `could not reach the API at ${getApiBaseUrl() || window.location.origin}`) // retry network
+      }
+    }
+  }
+  if (!response.ok) {
+    const body = await readBody(response) // FastAPI JSON detail on 404/503
+    const fallback = response.status === 429 ? "too many requests — try again in a minute" : "request failed"
+    throw new ApiError(response.status, detailFromBody(body, fallback)) // UI displays .detail
+  }
+  return response.blob() // application/pdf
 }
 
 // Options for multipart upload; `onProgress` is 0–100 from XMLHttpRequest (fetch has no upload progress).

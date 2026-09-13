@@ -6,6 +6,7 @@ import { fetchInterview, interviewQueryKeys, submitAnswer } from "@/api/intervie
 import { ApiError } from "@/api/types" // poll / GET / submit failures
 import type { AnswerOut, AudioUploadOut, InterviewSessionOut } from "@/api/types" // question rows + session status
 import { AudioRecorder } from "@/components/interview/audio-recorder" // MediaRecorder capture + upload
+import { DownloadReportButton } from "@/components/interview/download-report" // WeasyPrint PDF for completed sessions
 import { EvaluationCard } from "@/components/interview/evaluation-card" // score 0–5 + rationale; keep visible
 import { FluencyPanel } from "@/components/interview/fluency-panel" // dual fluency + prosody from speech_metrics
 import { InterviewJobStatus } from "@/components/interview/interview-job-status" // queued/running/failed copy
@@ -339,6 +340,20 @@ export function CandidateInterviewSessionPage() {
       ) : null}
       {session !== undefined && session.status !== "abandoned" && answers.length === 0 && !waitingOnGenerate ? (
         <p className="text-sm text-muted-foreground">No questions on this session yet.</p>
+      ) : null}
+      {session !== undefined && session.status === "completed" ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Session report</CardTitle>
+            <CardDescription>
+              Composite score and per-signal attribution are stored when the last answer is evaluated.
+              Ranking and comparison stay on the API this phase (no recruiter dashboard).
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <DownloadReportButton sessionId={session.id} />
+          </CardContent>
+        </Card>
       ) : null}
       <div className="flex flex-wrap gap-2">
         <Button type="button" variant="outline" asChild>

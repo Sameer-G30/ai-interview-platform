@@ -1,6 +1,6 @@
 # AI Interview Intelligence Platform
 
-Status: **Phase 12 of 15 complete (frontend-analysis)**. Full architecture diagram, seed/demo scripts, and
+Status: **Phase 13 of 15 complete (scoring-reports)**. Full architecture diagram, seed/demo scripts, and
 deployment profile land in the hardening phase per the build plan.
 
 ## What this is
@@ -408,6 +408,55 @@ interview dashboard.
   second LLM client, no openai-whisper, no new Whisper model download, no rebuild of `ml/speech`
   or the transcribe worker.
 
+### Phase 13 — scoring, ranking, comparison, WeasyPrint PDFs
+
+- **`ml/scoring/`** (shared by the `interview_evaluate` worker and a later research harness):
+  - `weights.py` — four signals after coding was dropped (resume / technical / communication /
+    behavioral). Defaults keep the brief’s 20/30/25/15 proportions and **always renormalize to
+    1.0**. Loaded from `Settings` / `.env` (`SCORE_WEIGHT_*`, same names as `.env.example`) via
+    `config_from_settings(get_settings())`. Never hardcoded at call sites. A missing signal
+    (text-only communication, no behavioral questions, …) is **omitted**, not stored as 0, and
+    the remaining weights renormalize for that session.
+  - `communication.py` — `scoring_v1` maps existing `speech_metrics` (both fluency arms, equal
+    mean — **not** a winner) onto 0–100 from speech rate, pause ratio, and filler rate. Does not
+    call Whisper. Does not fold pitch into the composite. Articulation rate is excluded because
+    the acoustic arm can be 0 WPM on a non-voiced tone (Phase 12 sine-WebM gotcha).
+  - `aggregate.py` — `resume_score` is that session’s `resumes.ats_score` (already 0–100).
+    Technical / behavioral are the mean of `answers.evaluation.score` (0–5) for that
+    `question_kind` **including follow-ups**, then × 20 to the same 0–100 range. Attribution JSON
+    stores `{weight, value, contribution}` per kept signal plus `configured_weights` / `omitted`
+    / `formula_version` so a later weight swap can still explain an old composite.
+  - `report.py` — HTML only (no WeasyPrint import). Dual fluency is printed as facts for both
+    arms. Grammar / vocabulary / relevance stay inside the judge payload.
+- **When the Score row is written**: same `interview_evaluate` pass that flips the session to
+  `completed` (every current question has `answer_text` and no follow-up was appended). Abandoned
+  sessions get no composite. Unique `session_id`; upsert if evaluate runs again. **No new ARQ job
+  type** and no Whisper/judge load for aggregation (arithmetic only).
+- **HTTP** (do not collide with `GET /jobs/{id}`):
+  - `GET /scores/{session_id}` — candidate own session, or recruiter for a session whose
+    `job_id` is a posting they own. **404** (not 403) if missing, someone else’s, practice
+    (recruiters), or not yet scored. Does **not** recompute.
+  - `GET /scores/rankings?posting_id=` — recruiter-only. Completed scored sessions on that
+    posting, `composite_score` descending. Other recruiter’s posting id is 404.
+  - `GET /scores/compare?session_ids=&session_ids=` — recruiter-only, 2+ distinct ids, all must
+    be visible or the whole call is 404.
+  - `GET /reports/{session_id}` — WeasyPrint PDF (`application/pdf`). Same ownership as GET
+    score. 503 if cairo/pango/WeasyPrint cannot render. Optional cache under
+    `<storage_root>/reports/` (gitignored via `/data/`).
+- **Frontend**: thin **Download report** on the existing candidate session page when status is
+  `completed`. No recruiter ranking table, no side-by-side comparison UI, no Recharts, no admin.
+- **No new Alembic revision** — `scores` already had every column (`0a764d64c629`). Head stays
+  `b7e4c19a5d03`. `alembic check` reports no new ops.
+- **Tests**: `test_ml_scoring.py` (weights, omit-and-renormalize, attribution sums, dual-arm
+  equal mean, HTML shows both fluency arms) plus `test_scores.py` (fake provider via
+  `_build_interview_provider`, redis_pool; PDF skips if WeasyPrint/cairo is missing). Full suite
+  **134 passed** against live Docker Postgres and Redis. Frontend `npm run lint` (existing shadcn
+  oxlint warnings only) and `npm run build`.
+- **Non-goals this phase**: no dashboards, no Recharts, no admin, no WebSockets, no recruiter
+  interview dashboard, no second LLM client, no openai-whisper, no new Whisper download, no
+  rebuild of `ml/speech` / `ml/llm` / `ml/interview` or the analysis UI, no coding-assessment
+  module, no MinIO.
+
 
 
 ## Local dev setup
@@ -715,6 +764,40 @@ A local Chromium capture under `data/blobs/interviews/` (gitignored) can be uplo
 Safari is not supported. Re-upload overwrites the webm and re-enqueues so transcript/metrics cannot
 stay stale. Text-only answers skip transcribe (`skipped: true`) and still complete the session.
 
+### Backend — scoring, ranking, comparison, and PDF (Phase 13)
+
+Complete the session first (every question has `answer_text`, evaluate did not append a follow-up).
+The Score row is written in that same `interview_evaluate` pass — poll `GET /jobs/{id}` until
+`session_status` is `completed`, then:
+
+```bash
+# Candidate: own session. Recruiter: only if session.job_id is a posting they own.
+# 404 (not 403) for the wrong id or a session that is still in_progress.
+curl -s http://localhost:8000/scores/<SESSION_ID> \
+  -H "Authorization: Bearer <ACCESS_TOKEN>"
+# -> {session_id, resume_score, technical_score, communication_score, behavioral_score,
+#     composite_score, attribution}
+
+# Recruiter ranking for one owned posting (practice sessions have job_id null and are omitted)
+curl -s "http://localhost:8000/scores/rankings?posting_id=<POSTING_ID>" \
+  -H "Authorization: Bearer <RECRUITER_ACCESS_TOKEN>"
+
+# Recruiter comparison (repeat session_ids=; needs two distinct ids on postings they own)
+curl -s "http://localhost:8000/scores/compare?session_ids=<SESSION_A>&session_ids=<SESSION_B>" \
+  -H "Authorization: Bearer <RECRUITER_ACCESS_TOKEN>"
+
+# WeasyPrint PDF (same ownership as GET /scores/{id}). Text-only reports omit fluency numbers.
+curl -s http://localhost:8000/reports/<SESSION_ID> \
+  -H "Authorization: Bearer <ACCESS_TOKEN>" \
+  -o /tmp/interview-report.pdf
+file /tmp/interview-report.pdf   # PDF document
+```
+
+`communication_score` is JSON `null` on text-only sessions (omitted from weighting, not stored as
+0). Dual fluency stays in `answers.speech_metrics` and in the PDF when transcribe succeeded.
+Swap `8000` for `8001` only if that is the port you bound. There is still no `GET /interviews` list
+and no candidate score-history collection URL.
+
 
 
 ### Frontend — lint, build, auth, resume, matches, and interview walkthrough
@@ -741,32 +824,34 @@ Manual UI checks (with `npm run dev` and the API on `:8001`):
 4. Sign out, sign back in with the same account — session restore from localStorage (`aiip.auth.tokens`) should skip the forms.
 5. Reload the page while signed in — `/auth/me` should repopulate the shell. If the access JWT has expired, the client will rotate the opaque refresh token via `POST /auth/refresh` without a visible logout.
 6. A recruiter with `is_admin=true` (set in the database by an operator, never via register) shows a disabled **Admin** row. There is no admin dashboard in this phase.
-7. On `/candidate`, click **Run demo job** (API + Redis + worker must be up). Status should move queued → running → succeeded and show the echo text. Leave `frontend/.env` `VITE_API_BASE_URL` empty so `/jobs`, `/resumes`, `/postings`, `/matches`, and `/interviews` stay same-origin through the Vite proxy.
+7. On `/candidate`, click **Run demo job** (API + Redis + worker must be up). Status should move queued → running → succeeded and show the echo text. Leave `frontend/.env` `VITE_API_BASE_URL` empty so `/jobs`, `/resumes`, `/postings`, `/matches`, `/interviews`, `/scores`, and `/reports` stay same-origin through the Vite proxy.
 8. Click **Resume** (or **Open resume upload**). Drop or pick a text-based PDF (≤ 10 MiB). A non-PDF should be rejected in the dropzone. After **Upload and parse**, you should land on the results page, see queued → running → succeeded, then sections, skill chips, and an ATS score. A PDF with no extractable text should show the failed job/resume states instead of a blank page.
 9. Sign out, sign in (or register) as a **recruiter**, open **Jobs** in the sidebar, and create a posting (title + description + optional comma-separated required skills). It should appear at the top of "Your postings" with an **Active** badge and an **Embedding…** badge; reload after a few seconds and the badge flips to **Embedded** once the worker finishes. Click **Deactivate** and confirm the badge flips to **Inactive**.
 10. Sign back in as the candidate whose resume you parsed in step 8, open **Matches** in the sidebar. You should see the posting from step 9 (if still active) with a similarity-score bar and skill chips split into "You have" (matched) and "Skill gap" (missing). A candidate with no parsed resume yet should see the "no parsed resume yet" empty state with a link back to `/candidate/resume` instead of an error.
 11. From a match card, click **Start interview** (or open **Interview** and click **Start practice interview**). You should land on the session URL with `?job=` and see generate status queued → running → succeeded, then questions. Do not expect the question list to update while generate is still queued. A candidate with no parsed resume who clicks practice start should see the upload CTA (404), not a crash. A generate failure shows the abandoned state.
-12. Type an answer (min 1 character) and click **Submit answer**. Evaluate status should poll the same way as generate (`?eval=`). When it succeeds, the score (0–5), rationale, strengths, and improvements appear. If the score is 0–2 on an original question, a follow-up row is appended — click **Next** after the session refetch; do not assume the question list is fixed at generate time. Re-submitting the same question is 409. A completed session stays readable.
-13. Optional: in Chromium, click **Start recording**, allow the microphone, speak, **Stop**, then **Upload recording**. The level meter / waveform should move while recording. Retry overwrites the stored blob and re-queues transcribe. Safari is not supported. Audio upload does **not** score the answer; text submit is what enqueues the judge. Transcribe status should move queued → running → succeeded, then the **full transcript** (not a truncated snippet), **word timings** (tap a token for start/end/probability), and **both fluency arms** plus a short prosody summary appear. Text-only answers show empty transcript/fluency copy instead of invented zeros. Switch questions: evaluation, transcript, and fluency stay per-answer and must not leak onto the next row. Recruiter still has no Interview / analysis screen.
+12. Type an answer (min 1 character) and click **Submit answer**. Evaluate status should poll the same way as generate (`?eval=`). When it succeeds, the score (0–5), rationale, strengths, and improvements appear. If the score is 0–2 on an original question, a follow-up row is appended — click **Next** after the session refetch; do not assume the question list is fixed at generate time. Re-submitting the same question is 409. A completed session stays readable and shows **Download report** (WeasyPrint PDF from the stored Score). Ranking/comparison have no recruiter UI this phase — use the curl section above.
+13. Optional: in Chromium, click **Start recording**, allow the microphone, speak, **Stop**, then **Upload recording**. The level meter / waveform should move while recording. Retry overwrites the stored blob and re-queues transcribe. Safari is not supported. Audio upload does **not** score the answer; text submit is what enqueues the judge. Transcribe status should move queued → running → succeeded, then the **full transcript** (not a truncated snippet), **word timings** (tap a token for start/end/probability), and **both fluency arms** plus a short prosody summary appear. Text-only answers show empty transcript/fluency copy instead of invented zeros. Switch questions: evaluation, transcript, and fluency stay per-answer and must not leak onto the next row. Recruiter still has no Interview / analysis screen. A PDF for a text-only completed session still downloads; it must not invent fluency numbers.
 
 `GET /` on the API still 404s; use `/health` or `/docs` (and the port you actually bound).
 
-### ml/ — resume + matching + LLM provider + interview engine + speech; scoring is still a stub
+### ml/ — resume + matching + LLM provider + interview engine + speech + scoring
 
 `ml/resume/` (parsing, ESCO skill matching, ATS scoring), `ml/matching/` (SBERT embeddings,
 cosine similarity, skill-gap diff, TF-IDF baseline), `ml/llm/` (Ollama / OpenAI-compatible
 provider, Pydantic JSON, versioned 0–5 rubrics, `GeneratedQuestions` / `InterviewQuestion`),
-`ml/interview/` (follow-up rule + prompt builders), and `ml/speech/` (faster-whisper, Silero VAD,
-parselmouth, dual fluency) are implemented. Phase 12 is UI on that speech payload; it does not
+`ml/interview/` (follow-up rule + prompt builders), `ml/speech/` (faster-whisper, Silero VAD,
+parselmouth, dual fluency), and `ml/scoring/` (config-driven weights, reconstructable
+attribution, PDF HTML) are implemented. Phase 12 is UI on the speech payload; Phase 13 does not
 change `ml/speech`. Resume/matching are covered by
 `backend/tests/test_resumes.py`, `test_postings.py`, `test_matches.py` (via the workers), and
 `test_ml_matching.py`. The LLM library is covered by `backend/tests/test_ml_llm.py` (MockTransport
 plus a skippable live-Ollama smoke). The interview engine is covered by `test_ml_interview.py` and
 `test_interviews.py` (fake provider + one skippable live generate+evaluate smoke, plus audio-upload
 enqueue). Speech is covered by `test_ml_speech.py` and `test_speech.py` (monkeypatched pipeline +
-one skippable live ffmpeg/Whisper smoke). `ml/scoring/` is still an empty package stub.
+one skippable live ffmpeg/Whisper smoke). Scoring is covered by `test_ml_scoring.py` and
+`test_scores.py` (fake provider; PDF skips if WeasyPrint/cairo is missing).
 
-You can also exercise `ml/resume`, `ml/matching`, `ml/llm`, and `ml/speech` directly, without the API/worker:
+You can also exercise `ml/resume`, `ml/matching`, `ml/llm`, `ml/speech`, and `ml/scoring` directly, without the API/worker:
 
 ```bash
 uv run python -c "
@@ -878,4 +963,4 @@ cd "/home/sam/projects/Project-2 MLIS/ai-interview-platform" && \
   uv sync && docker compose up -d && uv run alembic upgrade head && uv run pytest -q
 ```
 
-Worker (separate process, repo root): `uv run arq app.workers.settings.WorkerSettings`. SPA: `cd frontend && npm install && npm run dev` (leave `VITE_API_BASE_URL` empty so `/auth`, `/health`, `/jobs`, `/resumes`, `/postings`, `/matches`, and `/interviews` stay same-origin via the Vite proxy).
+Worker (separate process, repo root): `uv run arq app.workers.settings.WorkerSettings`. SPA: `cd frontend && npm install && npm run dev` (leave `VITE_API_BASE_URL` empty so `/auth`, `/health`, `/jobs`, `/resumes`, `/postings`, `/matches`, `/interviews`, `/scores`, and `/reports` stay same-origin via the Vite proxy).

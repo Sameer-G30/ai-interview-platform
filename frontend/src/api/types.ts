@@ -274,6 +274,32 @@ export type AudioUploadOut = {
   async_job_id: string // poll transcribe via GET /jobs/{id}; same useJobStatus hook as generate
 }
 
+// One stored Score row from GET /scores/{session_id} (`ScoreOut`). Null signals were omitted, not faked as 0.
+export type SignalAttribution = {
+  weight: number // applied (renormalized) weight for this session
+  value: number // 0–100
+  contribution: number // weight * value; sum equals composite_score
+}
+
+export type ScoreAttribution = {
+  formula_version: string // scoring_v1
+  judge_scale: string // evaluation.score 0-5 * 20 -> 0-100
+  communication_arm_policy: string // equal_mean of both fluency arms
+  configured_weights: Record<string, number> // raw SCORE_WEIGHT_* numbers
+  omitted: string[] // signals dropped this session (e.g. communication on text-only)
+  signals: Record<string, SignalAttribution> // resume / technical / communication / behavioral when present
+}
+
+export type ScoreOut = {
+  session_id: string // UUID string of the interview session
+  resume_score: number | null // ATS 0–100 or null
+  technical_score: number | null // scaled judge mean or null
+  communication_score: number | null // mapped dual fluency or null (text-only)
+  behavioral_score: number | null // scaled judge mean or null
+  composite_score: number | null // weighted sum; GET 404s when this is still null
+  attribution: ScoreAttribution | null // reconstructable explanation
+}
+
 export class ApiError extends Error {
   readonly status: number // HTTP status code from the failed response
   readonly detail: string // human-readable message parsed from FastAPI's `detail` field

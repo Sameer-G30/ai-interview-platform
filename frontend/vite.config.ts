@@ -46,6 +46,14 @@ export default defineConfig({
         target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // same target as /auth so /interviews stays same-origin
         changeOrigin: true, // set Host to the API so FastAPI sees a normal request
       },
+      "/scores": {
+        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // Phase 13 GET /scores/{id} + rankings/compare
+        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
+      },
+      "/reports": {
+        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // Phase 13 WeasyPrint PDF download
+        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
+      },
     },
   },
 })

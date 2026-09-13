@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     speech_min_pause_s: float = 0.2                 # pause floor for both fluency arms (seconds)
     whisper_language: str = "en"                    # force English; skip Whisper language detection
 
+    # --- Scoring weights (ml/scoring; four signals after coding was dropped; always renormalized) ---
+    score_weight_resume: float = 20.0               # SCORE_WEIGHT_RESUME; brief 20% of 90 after dropping coding
+    score_weight_technical: float = 30.0            # SCORE_WEIGHT_TECHNICAL; brief 30% of 90
+    score_weight_communication: float = 25.0        # SCORE_WEIGHT_COMMUNICATION; brief 25% of 90
+    score_weight_behavioral: float = 15.0           # SCORE_WEIGHT_BEHAVIORAL; brief 15% of 90
+
 
     def cors_allow_origins(self) -> list[str]:
         """Origins Starlette may echo back. `localhost` and `127.0.0.1` are different origins."""
