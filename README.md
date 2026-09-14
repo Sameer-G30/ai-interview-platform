@@ -2,6 +2,7 @@
 
 Status: **Phase 13 of 15 complete (scoring-reports)**. Full architecture diagram, seed/demo scripts, and
 deployment profile land in the hardening phase per the build plan.
+
 ## What this is
 
 A FastAPI + ARQ + `ml/` backend and a React/Vite/shadcn frontend implementing an
