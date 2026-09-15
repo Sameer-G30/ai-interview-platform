@@ -24,6 +24,21 @@ class InterviewStartOut(BaseModel):
     status: InterviewSessionStatus  # "scheduled" at this point; the worker advances it to in_progress
 
 
+class InterviewSessionListItemOut(BaseModel):
+    """One row of `GET /interviews` (candidate history). No answers payload — open GET /{id} for that."""
+
+    id: uuid.UUID  # link target: /candidate/interview/{id}
+    resume_id: uuid.UUID  # parsed resume this session was generated from
+    job_id: uuid.UUID | None  # posting id; null means practice (not on recruiter ranking)
+    posting_title: str | None  # Job.title when job_id is set; null for practice or a deleted posting
+    status: InterviewSessionStatus  # scheduled | in_progress | completed | abandoned
+    started_at: datetime | None  # set when generated questions are persisted
+    completed_at: datetime | None  # set when evaluate flips the session to completed
+    created_at: datetime  # row insert time; list is ordered by this descending
+    updated_at: datetime  # last write
+    composite_score: float | None  # stored Score.composite_score; null until completed (or abandoned)
+
+
 class AnswerOut(BaseModel):
     """One question/answer row inside a session GET payload."""
 

@@ -1,9 +1,10 @@
-"""`/interviews/*` endpoints: candidate-only session start, owner-only GET, text submit, audio blob.
+"""`/interviews/*` endpoints: candidate-only start/list, owner-only GET, text submit, audio blob.
 
 No LLM or Whisper runs inline here. `POST /interviews` inserts a scheduled session and enqueues
-`interview_generate`. `POST .../answers/{id}` stores `answer_text` and enqueues `interview_evaluate`.
-`POST .../answers/{id}/audio` writes `audio_path` and enqueues `transcribe` (ffmpeg + faster-whisper
-in the worker). Transcript stays null until that worker finishes. Poll progress with GET /jobs/{id}.
+`interview_generate`. `GET /interviews` lists the caller's own sessions (newest first) for the
+candidate dashboard — recruiters get 403, not a global dump. `POST .../answers/{id}` stores
+`answer_text` and enqueues `interview_evaluate`. `POST .../answers/{id}/audio` writes `audio_path`
+and enqueues `transcribe`. Transcript stays null until that worker finishes. Poll with GET /jobs/{id}.
 """
 
 import uuid  # path params for session_id / answer_id; resume_id / job_id in the start body
@@ -21,7 +22,7 @@ from fastapi import (  # routing / DI / errors / multipart audio
 )
 from sqlalchemy import select  # session GET with selectinload of answers
 from sqlalchemy.ext.asyncio import AsyncSession  # request-scoped DB session
-from sqlalchemy.orm import selectinload  # eager-load answers so GET does not lazy-IO in async
+from sqlalchemy.orm import joinedload, selectinload  # list joins job/score; detail eager-loads answers
 
 from app.auth.dependencies import (  # start/submit/audio are candidate-only; GET is any-auth 404
     get_current_user,
@@ -40,6 +41,7 @@ from app.schemas.interviews import (  # request/response contracts
     AnswerSubmitIn,
     AnswerSubmitOut,
     AudioUploadOut,
+    InterviewSessionListItemOut,
     InterviewSessionOut,
     InterviewStartIn,
     InterviewStartOut,
@@ -125,6 +127,43 @@ async def start_interview(
         ) from exc
 
     return InterviewStartOut(session_id=interview.id, async_job_id=job.id, status=interview.status)
+
+
+def _list_item(interview: InterviewSession) -> InterviewSessionListItemOut:
+    """Map one ORM session (job + score already loaded) onto the history-row contract."""
+    posting = interview.job  # joinedload; None for practice or ON DELETE SET NULL
+    score = interview.score  # joinedload; None until evaluate writes a completed composite
+    return InterviewSessionListItemOut(
+        id=interview.id,  # SPA history link
+        resume_id=interview.resume_id,  # the parsed resume used to generate questions
+        job_id=interview.job_id,  # null = practice; recruiter ranking never sees these
+        posting_title=posting.title if posting is not None else None,  # display; not a MiniLM score
+        status=interview.status,  # scheduled | in_progress | completed | abandoned
+        started_at=interview.started_at,  # None while still scheduled
+        completed_at=interview.completed_at,  # None until evaluate completes the session
+        created_at=interview.created_at,  # sort key (newest first)
+        updated_at=interview.updated_at,  # last write
+        composite_score=score.composite_score if score is not None else None,  # stored; GET does not recompute
+    )
+
+
+@router.get("", response_model=list[InterviewSessionListItemOut])
+async def list_interviews(
+    session: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(require_candidate),
+) -> list[InterviewSessionListItemOut]:
+    """Return this candidate's sessions, newest `created_at` first. Recruiters 403 (use GET /scores/rankings)."""
+    result = await session.execute(
+        select(InterviewSession)
+        .options(
+            joinedload(InterviewSession.job),  # posting_title without a second query
+            joinedload(InterviewSession.score),  # composite_score without N+1 GET /scores
+        )
+        .where(InterviewSession.user_id == current_user.id)  # never leak another candidate's rows
+        .order_by(InterviewSession.created_at.desc())  # newest first for the dashboard history
+    )
+    interviews = result.unique().scalars().all()  # unique() is required once joinedload is in play
+    return [_list_item(interview) for interview in interviews]  # empty list is a valid 200
 
 
 @router.get("/{session_id}", response_model=InterviewSessionOut)

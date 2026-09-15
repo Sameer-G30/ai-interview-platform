@@ -2,10 +2,10 @@ import { useState } from "react" // download in-flight / error copy
 
 import { downloadReportPdf } from "@/api/scores" // GET /reports/{id} → Blob
 import { ApiError } from "@/api/types" // 404 / 503 detail
-import { Button } from "@/components/ui/button" // thin control on the completed session page
+import { Button } from "@/components/ui/button" // session page + compact ranking-row control
 
-// Candidate (or recruiter, if they ever share this page) download of the stored WeasyPrint PDF.
-export function DownloadReportButton({ sessionId }: { sessionId: string }) {
+// Candidate session page or recruiter ranking-row download of the stored WeasyPrint PDF.
+export function DownloadReportButton({ sessionId, compact = false }: { sessionId: string; compact?: boolean }) {
   const [busy, setBusy] = useState(false) // disable while the blob is in flight
   const [error, setError] = useState<string | null>(null) // 404 score missing / 503 renderer / network
 
@@ -36,14 +36,21 @@ export function DownloadReportButton({ sessionId }: { sessionId: string }) {
 
   return (
     <div className="flex flex-col gap-2">
-      <Button type="button" onClick={() => void onClick()} disabled={busy}>
-        {busy ? "Preparing report…" : "Download report"}
+      <Button
+        type="button"
+        size={compact ? "sm" : "default"}
+        variant={compact ? "outline" : "default"}
+        data-testid={`download-report-${sessionId}`}
+        onClick={() => void onClick()}
+        disabled={busy}
+      >
+        {busy ? "Preparing…" : compact ? "PDF" : "Download report"}
       </Button>
       {error !== null ? (
         <p className="text-sm text-destructive" role="alert">
           {error}
         </p>
-      ) : (
+      ) : compact ? null : (
         <p className="text-sm text-muted-foreground">
           PDF is built from the stored composite and attribution. Dual fluency is included when audio
           was transcribed; text-only answers do not invent fluency numbers.

@@ -13,6 +13,7 @@ import { CandidateResumeResultsPage } from "@/pages/candidate-resume-results-pag
 import { CandidateResumeUploadPage } from "@/pages/candidate-resume-upload-page" // drag-drop PDF upload
 import { LoginPage } from "@/pages/login-page" // POST /auth/login form
 import { NotFoundPage } from "@/pages/not-found-page" // unknown paths
+import { RecruiterCandidatesPage } from "@/pages/recruiter-candidates-page" // ranking / compare / Recharts / PDF
 import { RecruiterHomePage } from "@/pages/recruiter-home-page" // recruiter landing
 import { RecruiterJobsPage } from "@/pages/recruiter-jobs-page" // posting create/list/deactivate
 import { RegisterPage } from "@/pages/register-page" // POST /auth/register form
@@ -97,6 +98,14 @@ export const router = createBrowserRouter([
             element: (
               <RequireRole role="recruiter">
                 <RecruiterJobsPage />
+              </RequireRole>
+            ),
+          },
+          {
+            path: "/recruiter/candidates",
+            element: (
+              <RequireRole role="recruiter">
+                <RecruiterCandidatesPage />
               </RequireRole>
             ),
           },

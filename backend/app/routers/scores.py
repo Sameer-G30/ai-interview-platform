@@ -1,8 +1,8 @@
 """`/scores/*` endpoints: owner GET, recruiter ranking by posting, recruiter comparison.
 
 Aggregation is arithmetic and already stored on `scores` when a session completes. These handlers
-only read; they do not call Ollama, Whisper, or `aggregate_session`. Ranking/comparison have no
-SPA this phase (curl + pytest). GET /interviews list still does not exist.
+only read; they do not call Ollama, Whisper, or `aggregate_session`. Candidate history is
+`GET /interviews` (own rows only). Recruiter ranking/compare stay on this router.
 """
 
 import uuid  # path and query params

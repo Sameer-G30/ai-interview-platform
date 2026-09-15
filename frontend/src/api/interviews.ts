@@ -4,6 +4,7 @@ import { apiFetch, apiUpload } from "@/api/client" // JSON POST/GET plus multipa
 import type {
   AnswerSubmitOut,
   AudioUploadOut,
+  InterviewSessionListItemOut,
   InterviewSessionOut,
   InterviewStartOut,
   InterviewStartRequest,
@@ -18,6 +19,14 @@ export async function startInterview(body: InterviewStartRequest = {}): Promise<
   return apiFetch<InterviewStartOut>("/interviews", {
     method: "POST", // FastAPI start is POST; 201 with session_id + async_job_id
     body, // resume_id / job_id optional; omit both for practice
+    auth: true, // owner is taken from the access JWT
+  })
+}
+
+// GET /interviews — candidate-only list of the caller's sessions, newest created_at first.
+export async function listInterviews(): Promise<InterviewSessionListItemOut[]> {
+  return apiFetch<InterviewSessionListItemOut[]>("/interviews", {
+    method: "GET", // FastAPI collection read is GET; recruiters 403
     auth: true, // owner is taken from the access JWT
   })
 }
@@ -62,5 +71,6 @@ export function interviewSessionPath(sessionId: string, generateJobId: string): 
 // Query-key factory so the session page and invalidateQueries share the same cache entries.
 export const interviewQueryKeys = {
   all: ["interviews"] as const, // prefix for every interview query
+  list: () => ["interviews", "list"] as const, // GET /interviews (candidate history)
   detail: (sessionId: string) => ["interviews", "detail", sessionId] as const, // GET /interviews/{id}
 }

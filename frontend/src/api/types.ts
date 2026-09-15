@@ -242,6 +242,20 @@ export type InterviewSessionOut = {
   updated_at: string // ISO timestamp of last update
 }
 
+// One row of candidate-only GET /interviews (`InterviewSessionListItemOut`). No answers array.
+export type InterviewSessionListItemOut = {
+  id: string // UUID; history link is /candidate/interview/{id}
+  resume_id: string // parsed resume this session was generated from
+  job_id: string | null // posting id; null means practice (not on recruiter ranking)
+  posting_title: string | null // Job.title when job_id is set; null for practice
+  status: InterviewSessionStatus // scheduled | in_progress | completed | abandoned
+  started_at: string | null // set when generated questions are persisted
+  completed_at: string | null // set when evaluate flips the session to completed
+  created_at: string // ISO timestamp; list is newest first
+  updated_at: string // ISO timestamp of last write
+  composite_score: number | null // stored Score; null until completed
+}
+
 // Body for POST /interviews; both ids optional. Omitted resume_id uses the latest parsed resume.
 export type InterviewStartRequest = {
   resume_id?: string | null // must be owned + parsed when set; 404/409 same as GET /matches
@@ -298,6 +312,32 @@ export type ScoreOut = {
   behavioral_score: number | null // scaled judge mean or null
   composite_score: number | null // weighted sum; GET 404s when this is still null
   attribution: ScoreAttribution | null // reconstructable explanation
+}
+
+// One completed scored session on a posting from GET /scores/rankings (`RankingRowOut`).
+export type RankingRowOut = {
+  rank: number // 1-based position in this posting's list (API order is composite desc)
+  session_id: string // GET /scores/{id} / GET /reports/{id}
+  candidate_user_id: string // interview_sessions.user_id
+  candidate_email: string // identifiable label in the ranking table
+  completed_at: string | null // when evaluate flipped the session
+  resume_score: number | null // echo Score; null means omitted, not 0
+  technical_score: number | null // echo
+  communication_score: number | null // echo; text-only is null
+  behavioral_score: number | null // echo
+  composite_score: number | null // sort key from the API
+  attribution: ScoreAttribution | null // reconstructable explanation
+}
+
+// Exact JSON body FastAPI returns from GET /scores/rankings (`RankingOut`).
+export type RankingOut = {
+  posting_id: string // jobs.id that interview_sessions.job_id points at
+  sessions: RankingRowOut[] // empty list is a valid 200
+}
+
+// Exact JSON body FastAPI returns from GET /scores/compare (`ComparisonOut`).
+export type ComparisonOut = {
+  sessions: ScoreOut[] // same order as the distinct session_ids query params
 }
 
 export class ApiError extends Error {

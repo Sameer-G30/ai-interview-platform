@@ -29,20 +29,20 @@ type NavItem = {
   adminOnly?: boolean // true for the admin placeholder; only shown when user.isAdmin
 }
 
-// Candidate nav: overview/resume/matches/interview are live.
+// Candidate nav: overview is the Phase 14 dashboard; resume/matches/interview stay live.
 const candidateNav: NavItem[] = [
-  { title: "Overview", href: "/candidate", icon: LayoutDashboardIcon }, // live placeholder home
+  { title: "Overview", href: "/candidate", icon: LayoutDashboardIcon }, // score summary + history
   { title: "Resume", href: "/candidate/resume", icon: FileTextIcon }, // Phase 6 upload + parsed results
   { title: "Matches", href: "/candidate/matches", icon: BriefcaseIcon }, // Phase 7 ranked postings + skill gap
   { title: "Interview", href: "/candidate/interview", icon: MicIcon }, // Phase 10 session UI; recruiter has no row
 ]
 
-// Recruiter nav: overview/jobs are live; candidates/admin are later phases.
+// Recruiter nav: overview/jobs/candidates are live; admin is admin-ops (not this phase).
 const recruiterNav: NavItem[] = [
-  { title: "Overview", href: "/recruiter", icon: LayoutDashboardIcon }, // live placeholder home
+  { title: "Overview", href: "/recruiter", icon: LayoutDashboardIcon }, // links to Jobs + Candidates
   { title: "Jobs", href: "/recruiter/jobs", icon: BriefcaseIcon }, // Phase 7 posting create/list/deactivate
-  { title: "Candidates", icon: UsersIcon, disabled: true }, // later recruiter work
-  { title: "Admin", icon: ShieldIcon, disabled: true, adminOnly: true }, // Phase 14; shown only when is_admin
+  { title: "Candidates", href: "/recruiter/candidates", icon: UsersIcon }, // Phase 14 ranking / compare / charts
+  { title: "Admin", icon: ShieldIcon, disabled: true, adminOnly: true }, // admin-ops; shown only when is_admin
 ]
 
 // Picks the nav list for the signed-in role.

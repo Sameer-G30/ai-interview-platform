@@ -1,6 +1,6 @@
 # AI Interview Intelligence Platform
 
-Status: **Phase 13 of 15 complete (scoring-reports)**. Full architecture diagram, seed/demo scripts, and
+Status: **Phase 14 of 15 complete (frontend-dashboards)**. Full architecture diagram, seed/demo scripts, and
 deployment profile land in the hardening phase per the build plan.
 
 ## What this is
@@ -49,7 +49,7 @@ covering registration, duplicate-email rejection, login success/failure, refresh
 detection, logout, and the `/auth/me` bearer-token dependency.
 
 Not yet built: resume/job-matching/interview/speech/scoring pipelines, resume/interview
-UI, dashboards, and admin ops (Phase 14). `ml/` is still empty stubs.
+UI, and admin ops (admin-ops). `ml/` is still empty stubs.
 
 ### Phase 3 — frontend shell
 
@@ -68,7 +68,7 @@ retries the original request. Failed refresh clears localStorage.
 or `/recruiter`.
 - **Route guards**: guests hitting `/` go to `/login`; signed-in users hitting `/` or the auth
 forms go to their role home. A candidate cannot open `/recruiter` and vice versa. Recruiter
-`is_admin` shows a disabled Admin nav row (no admin dashboard yet — Phase 14).
+`is_admin` shows a disabled Admin nav row (no admin dashboard yet — that is `admin-ops`).
 - **Session restore**: tokens live in `localStorage` (`aiip.auth.tokens`). Reloading the app
 rehydrates `/auth/me`. Sign out calls `POST /auth/logout` then always clears local state.
 
@@ -457,6 +457,33 @@ interview dashboard.
   rebuild of `ml/speech` / `ml/llm` / `ml/interview` or the analysis UI, no coding-assessment
   module, no MinIO.
 
+### Phase 14 — candidate and recruiter dashboards (on the live Phase 13 APIs)
+
+- **Candidate `/candidate`** is the dashboard (Overview). Resume, Matches, Interview start/session,
+  queue demo, and session-page **Download report** stay. Score summary reads a stored `Score`
+  (composite + four signals + attribution). Omitted communication is **Not recorded**, not 0.
+  History is `GET /interviews` (candidate-only, newest first, practice vs posting). Skill-gap
+  reuses `GET /matches`. Recommendations are derived from those facts — no Ollama coaching essays.
+  Empty states: no parsed resume, no sessions yet, in_progress with no score yet.
+- **Recruiter Candidates** nav is enabled (`/recruiter/candidates`). Ranking table for an owned
+  posting (`GET /scores/rankings`), client-side sort/filter on that payload, side-by-side
+  `GET /scores/compare`, Recharts score-distribution + required-skills chart (no MiniLM in the
+  browser), and PDF via existing `GET /reports/{id}` + `apiBlob`. Recruiter still has **no**
+  Interview / analysis screen. Admin stays disabled (`admin-ops`).
+- **`GET /interviews`** (new collection): `require_candidate`, own rows only, newest
+  `created_at` first. Recruiters 403 (use rankings). Includes `posting_title` and stored
+  `composite_score`; no answers array. Owner-only `GET /interviews/{id}` is unchanged (404 not 403).
+- **No new Alembic revision.** Head stays `b7e4c19a5d03`. `alembic check` reports no new ops.
+- **Tests**: `test_interview_list.py` (empty list, recruiter 403, isolation, practice vs posting,
+  Score join from evaluate). Full suite **138 passed** (134 prior + 4 new) against live Docker
+  Postgres and Redis. Frontend `npm run lint` (existing shadcn oxlint warnings only) and
+  `npm run build`. Recharts is frontend-only (`recharts` in `frontend/package.json`); numpy stayed
+  **1.26.4**.
+- **Non-goals this phase**: no admin, no `UserRole.ADMIN`, no WebSockets, no second LLM client,
+  no openai-whisper, no new Whisper download, no rebuilding `ml/speech` / `ml/llm` / `ml/interview`
+  / `ml/scoring` or the analysis UI, no making audio the only answer type, no coding-assessment
+  module, no MinIO, no ReportLab.
+
 
 
 ## Local dev setup
@@ -795,15 +822,23 @@ file /tmp/interview-report.pdf   # PDF document
 
 `communication_score` is JSON `null` on text-only sessions (omitted from weighting, not stored as
 0). Dual fluency stays in `answers.speech_metrics` and in the PDF when transcribe succeeded.
-Swap `8000` for `8001` only if that is the port you bound. There is still no `GET /interviews` list
-and no candidate score-history collection URL.
+Swap `8000` for `8001` only if that is the port you bound.
+
+Candidate history (Phase 14; recruiters 403 — they use ranking):
+
+```bash
+curl -s http://localhost:8000/interviews \
+  -H "Authorization: Bearer <CANDIDATE_ACCESS_TOKEN>"
+# -> [{id, resume_id, job_id, posting_title, status, composite_score, ...}, ...] newest first
+```
 
 
 
 ### Frontend — lint, build, auth, resume, matches, and interview walkthrough
 
-The Vite+shadcn scaffold has the shell, candidate resume upload/results, Matches, recruiter Jobs,
-and the candidate interview session (text + optional MediaRecorder + transcript viewer + dual
+The Vite+shadcn scaffold has the shell, candidate dashboard (score summary / history / skill-gap),
+resume upload/results, Matches, recruiter Jobs, recruiter Candidates (ranking / compare / Recharts /
+PDF), and the candidate interview session (text + optional MediaRecorder + transcript viewer + dual
 fluency cards). Backend, Postgres, Redis, the ARQ worker, and a reachable LLM (local Ollama by
 default) must be up for the interview steps. CORS allows `FRONTEND_ORIGIN` and its `127.0.0.1`
 twin (this machine: `http://localhost:5174`). See **Ports, CORS, and sharing the machine with
@@ -819,18 +854,20 @@ npm run dev      # pinned to http://localhost:5174 (strictPort)
 Manual UI checks (with `npm run dev` and the API on `:8001`):
 
 1. Open `http://localhost:5174` — you should be redirected to `/login` (not a 404; that 404 is only `GET /` on the API). Type that URL in a normal browser; a Cursor terminal link may remap 5174 to 5175.
-2. Click through to **Create one**, register a **candidate** (password ≥ 8 chars). You should land on `/candidate` with the sidebar showing Overview, **Resume**, **Matches**, and **Interview** (all live). Recruiters still have no Interview nav.
-3. Sign out. Register a **recruiter**. You should land on `/recruiter`. Visiting `/candidate` as a recruiter should bounce you back to `/recruiter`. Recruiters have no Resume nav.
+2. Click through to **Create one**, register a **candidate** (password ≥ 8 chars). You should land on `/candidate` with the sidebar showing Overview, **Resume**, **Matches**, and **Interview** (all live). Overview is the dashboard (score summary / history). Recruiters still have no Interview nav.
+3. Sign out. Register a **recruiter**. You should land on `/recruiter`. Visiting `/candidate` as a recruiter should bounce you back to `/recruiter`. Recruiters have no Resume nav. **Candidates** is live (`/recruiter/candidates`).
 4. Sign out, sign back in with the same account — session restore from localStorage (`aiip.auth.tokens`) should skip the forms.
 5. Reload the page while signed in — `/auth/me` should repopulate the shell. If the access JWT has expired, the client will rotate the opaque refresh token via `POST /auth/refresh` without a visible logout.
-6. A recruiter with `is_admin=true` (set in the database by an operator, never via register) shows a disabled **Admin** row. There is no admin dashboard in this phase.
+6. A recruiter with `is_admin=true` (set in the database by an operator, never via register) shows a disabled **Admin** row. There is no admin dashboard in this phase (`admin-ops` is next).
 7. On `/candidate`, click **Run demo job** (API + Redis + worker must be up). Status should move queued → running → succeeded and show the echo text. Leave `frontend/.env` `VITE_API_BASE_URL` empty so `/jobs`, `/resumes`, `/postings`, `/matches`, `/interviews`, `/scores`, and `/reports` stay same-origin through the Vite proxy.
 8. Click **Resume** (or **Open resume upload**). Drop or pick a text-based PDF (≤ 10 MiB). A non-PDF should be rejected in the dropzone. After **Upload and parse**, you should land on the results page, see queued → running → succeeded, then sections, skill chips, and an ATS score. A PDF with no extractable text should show the failed job/resume states instead of a blank page.
 9. Sign out, sign in (or register) as a **recruiter**, open **Jobs** in the sidebar, and create a posting (title + description + optional comma-separated required skills). It should appear at the top of "Your postings" with an **Active** badge and an **Embedding…** badge; reload after a few seconds and the badge flips to **Embedded** once the worker finishes. Click **Deactivate** and confirm the badge flips to **Inactive**.
 10. Sign back in as the candidate whose resume you parsed in step 8, open **Matches** in the sidebar. You should see the posting from step 9 (if still active) with a similarity-score bar and skill chips split into "You have" (matched) and "Skill gap" (missing). A candidate with no parsed resume yet should see the "no parsed resume yet" empty state with a link back to `/candidate/resume` instead of an error.
 11. From a match card, click **Start interview** (or open **Interview** and click **Start practice interview**). You should land on the session URL with `?job=` and see generate status queued → running → succeeded, then questions. Do not expect the question list to update while generate is still queued. A candidate with no parsed resume who clicks practice start should see the upload CTA (404), not a crash. A generate failure shows the abandoned state.
-12. Type an answer (min 1 character) and click **Submit answer**. Evaluate status should poll the same way as generate (`?eval=`). When it succeeds, the score (0–5), rationale, strengths, and improvements appear. If the score is 0–2 on an original question, a follow-up row is appended — click **Next** after the session refetch; do not assume the question list is fixed at generate time. Re-submitting the same question is 409. A completed session stays readable and shows **Download report** (WeasyPrint PDF from the stored Score). Ranking/comparison have no recruiter UI this phase — use the curl section above.
+12. Type an answer (min 1 character) and click **Submit answer**. Evaluate status should poll the same way as generate (`?eval=`). When it succeeds, the score (0–5), rationale, strengths, and improvements appear. If the score is 0–2 on an original question, a follow-up row is appended — click **Next** after the session refetch; do not assume the question list is fixed at generate time. Re-submitting the same question is 409. A completed session stays readable and shows **Download report** (WeasyPrint PDF from the stored Score).
 13. Optional: in Chromium, click **Start recording**, allow the microphone, speak, **Stop**, then **Upload recording**. The level meter / waveform should move while recording. Retry overwrites the stored blob and re-queues transcribe. Safari is not supported. Audio upload does **not** score the answer; text submit is what enqueues the judge. Transcribe status should move queued → running → succeeded, then the **full transcript** (not a truncated snippet), **word timings** (tap a token for start/end/probability), and **both fluency arms** plus a short prosody summary appear. Text-only answers show empty transcript/fluency copy instead of invented zeros. Switch questions: evaluation, transcript, and fluency stay per-answer and must not leak onto the next row. Recruiter still has no Interview / analysis screen. A PDF for a text-only completed session still downloads; it must not invent fluency numbers.
+14. After a completed session, open **Overview** (`/candidate`). You should see a score summary (composite + four signals; communication **Not recorded** on text-only), interview history with a link back to `/candidate/interview/:sessionId`, skill-gap chips from Matches, and recommendations derived from those facts (not an LLM essay). Empty states: no parsed resume, no sessions, in_progress with no score yet. Repeat on a mobile viewport (~390×844).
+15. Sign in as the recruiter, open **Candidates**. Pick an owned posting. The ranking table should list completed scored sessions (practice interviews omitted). Sort/filter without changing stored numbers. Check two rows, click **Compare selected**, and confirm side-by-side signals. Recharts should show score distribution plus required-skills from the posting (not MiniLM). Click **PDF** on a row — same `GET /reports/{id}` as the candidate session button. Repeat ranking → compare → PDF on a mobile viewport. Recruiter still has no Interview screen.
 
 `GET /` on the API still 404s; use `/health` or `/docs` (and the port you actually bound).
 
