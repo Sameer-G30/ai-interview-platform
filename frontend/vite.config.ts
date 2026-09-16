@@ -54,6 +54,17 @@ export default defineConfig({
         target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // Phase 13 WeasyPrint PDF download
         changeOrigin: true, // set Host to the API so FastAPI sees a normal request
       },
+      "/admin": {
+        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // Phase 15 require_admin user/posting/session/score ops
+        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
+        bypass(req) {
+          // Browser document navigations to the SPA route /admin must not be stolen by the API proxy.
+          // apiFetch sets Accept: application/json, so GET /admin/users still reaches FastAPI.
+          if (req.headers.accept?.includes("text/html")) {
+            return "/index.html" // let Vite serve the SPA; React Router owns /admin
+          }
+        },
+      },
     },
   },
 })

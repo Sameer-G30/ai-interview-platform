@@ -340,6 +340,58 @@ export type ComparisonOut = {
   sessions: ScoreOut[] // same order as the distinct session_ids query params
 }
 
+// Body for PATCH /admin/users/{id}. At least one field is required server-side (422 if both omitted).
+export type AdminUserPatch = {
+  is_active?: boolean // false = soft disable; get_current_user already 401s inactive accounts
+  is_admin?: boolean // recruiters only; 422 on a candidate; never settable via register
+}
+
+// One posting from GET /admin/postings (`AdminPostingOut`). Cross-recruiter; GET /postings stays own-only.
+export type AdminPostingOut = {
+  id: string // UUID string of the jobs row
+  recruiter_id: string // users.id of the posting owner
+  recruiter_email: string // identifiable without a second GET
+  title: string // Job.title
+  description: string // Job.description
+  required_skills: string | null // freeform
+  is_active: boolean // PATCH target; prefer this over hard DELETE
+  has_embedding: boolean // true once posting_embed wrote Job.embedding
+  created_at: string // ISO timestamp of row insert
+  updated_at: string // ISO timestamp of last update
+}
+
+// One session from GET /admin/sessions (`AdminSessionListItemOut`). Practice is included (ops, not ranking).
+export type AdminSessionListItemOut = {
+  id: string // interview_sessions.id
+  candidate_user_id: string // interview_sessions.user_id
+  candidate_email: string // users.email
+  resume_id: string // parsed resume this session was generated from
+  job_id: string | null // posting id; null means practice
+  posting_title: string | null // Job.title when job_id is set
+  status: InterviewSessionStatus // scheduled | in_progress | completed | abandoned
+  started_at: string | null // set when generated questions are persisted
+  completed_at: string | null // set when evaluate flips the session to completed
+  created_at: string // ISO timestamp; list is newest first
+  updated_at: string // ISO timestamp of last write
+  composite_score: number | null // stored Score; null until completed
+}
+
+// One stored Score from GET /admin/scores (`AdminScoreListItemOut`). Practice included; GET does not recompute.
+export type AdminScoreListItemOut = {
+  session_id: string // scores.session_id
+  candidate_user_id: string // interview_sessions.user_id
+  candidate_email: string // users.email
+  job_id: string | null // null = practice
+  posting_title: string | null // Job.title when job_id is set
+  resume_score: number | null // ATS 0–100 or null
+  technical_score: number | null // scaled judge mean or null
+  communication_score: number | null // mapped dual fluency or null (text-only)
+  behavioral_score: number | null // scaled judge mean or null
+  composite_score: number | null // weighted sum already stored
+  attribution: ScoreAttribution | null // reconstructable explanation
+  completed_at: string | null // when the session flipped to completed
+}
+
 export class ApiError extends Error {
   readonly status: number // HTTP status code from the failed response
   readonly detail: string // human-readable message parsed from FastAPI's `detail` field

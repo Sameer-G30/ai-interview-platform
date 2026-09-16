@@ -14,6 +14,7 @@ from app.core.config import get_settings  # cached, typed Settings object read f
 from app.core.rate_limit import limiter  # shared Limiter instance, also imported by app.routers.auth
 from app.core.redis import close_arq_pool, create_arq_pool  # ARQ Redis pool used to enqueue jobs
 from app.routers import (  # every mounted router
+    admin,
     auth,
     health,
     interviews,
@@ -82,3 +83,5 @@ app.include_router(interviews.router)
 app.include_router(scores.router)
 # Mount WeasyPrint PDF download; same ownership as GET /scores/{id}. Blobs gitignored under storage_root.
 app.include_router(reports.router)
+# Mount admin-ops; require_admin on every route. Prefix /admin so GET /postings stays own-only.
+app.include_router(admin.router)

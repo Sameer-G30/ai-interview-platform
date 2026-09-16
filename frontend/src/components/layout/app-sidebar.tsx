@@ -37,12 +37,12 @@ const candidateNav: NavItem[] = [
   { title: "Interview", href: "/candidate/interview", icon: MicIcon }, // Phase 10 session UI; recruiter has no row
 ]
 
-// Recruiter nav: overview/jobs/candidates are live; admin is admin-ops (not this phase).
+// Recruiter nav: overview/jobs/candidates are live; Admin is is_admin-only (admin-ops).
 const recruiterNav: NavItem[] = [
   { title: "Overview", href: "/recruiter", icon: LayoutDashboardIcon }, // links to Jobs + Candidates
   { title: "Jobs", href: "/recruiter/jobs", icon: BriefcaseIcon }, // Phase 7 posting create/list/deactivate
   { title: "Candidates", href: "/recruiter/candidates", icon: UsersIcon }, // Phase 14 ranking / compare / charts
-  { title: "Admin", icon: ShieldIcon, disabled: true, adminOnly: true }, // admin-ops; shown only when is_admin
+  { title: "Admin", href: "/admin", icon: ShieldIcon, adminOnly: true }, // Phase 15; hidden unless user.isAdmin
 ]
 
 // Picks the nav list for the signed-in role.
@@ -80,7 +80,7 @@ export function AppSidebar() {
                 </div>
                 <div className="flex flex-col leading-tight">
                   <span className="font-semibold">Interview Intel</span>
-                  <span className="text-xs text-muted-foreground">Phase 3 shell</span>
+                  <span className="text-xs text-muted-foreground">AI interviews</span>
                 </div>
               </div>
             </SidebarMenuButton>
@@ -96,7 +96,11 @@ export function AppSidebar() {
                 <SidebarMenuItem key={item.title}>
                   {item.href && !item.disabled ? (
                     <SidebarMenuButton asChild tooltip={item.title}>
-                      <NavLink to={item.href} end={item.href === "/candidate" || item.href === "/recruiter"}>
+                      <NavLink
+                        to={item.href}
+                        end={item.href === "/candidate" || item.href === "/recruiter"}
+                        data-testid={item.title === "Admin" ? "admin-nav-link" : undefined}
+                      >
                         <item.icon />
                         <span>{item.title}</span>
                       </NavLink>

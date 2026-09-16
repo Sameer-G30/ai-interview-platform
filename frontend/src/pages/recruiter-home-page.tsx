@@ -12,7 +12,7 @@ export function RecruiterHomePage() {
       <h1 className="text-2xl font-semibold">Recruiter home</h1>
       <p className="text-muted-foreground">
         Signed in as {user?.email}
-        {user?.isAdmin ? " (admin flag on — user management lands in admin-ops)" : ""}. Rankings, side-by-side
+        {user?.isAdmin ? " (admin flag on — open Admin for user and posting management)" : ""}. Rankings, side-by-side
         comparison, and PDF reports are on Candidates. Job postings stay on Jobs.
       </p>
       <div className="flex flex-wrap gap-2">
@@ -22,6 +22,11 @@ export function RecruiterHomePage() {
         <Button type="button" variant="outline" asChild>
           <Link to="/recruiter/candidates">Open candidates</Link>
         </Button>
+        {user?.isAdmin ? (
+          <Button type="button" variant="outline" asChild>
+            <Link to="/admin">Open admin</Link>
+          </Button>
+        ) : null}
       </div>
     </div>
   )

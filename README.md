@@ -1,6 +1,6 @@
 # AI Interview Intelligence Platform
 
-Status: **Phase 14 of 15 complete (frontend-dashboards)**. Full architecture diagram, seed/demo scripts, and
+Status: **Phase 15 of 15 complete (admin-ops)**. Full architecture diagram, seed/demo scripts, and
 deployment profile land in the hardening phase per the build plan.
 
 ## What this is
@@ -469,7 +469,7 @@ interview dashboard.
   posting (`GET /scores/rankings`), client-side sort/filter on that payload, side-by-side
   `GET /scores/compare`, Recharts score-distribution + required-skills chart (no MiniLM in the
   browser), and PDF via existing `GET /reports/{id}` + `apiBlob`. Recruiter still has **no**
-  Interview / analysis screen. Admin stays disabled (`admin-ops`).
+  Interview / analysis screen. Admin nav stayed disabled until Phase 15.
 - **`GET /interviews`** (new collection): `require_candidate`, own rows only, newest
   `created_at` first. Recruiters 403 (use rankings). Includes `posting_title` and stored
   `composite_score`; no answers array. Owner-only `GET /interviews/{id}` is unchanged (404 not 403).
@@ -484,7 +484,49 @@ interview dashboard.
   / `ml/scoring` or the analysis UI, no making audio the only answer type, no coding-assessment
   module, no MinIO, no ReportLab.
 
+### Phase 15 — admin-ops (on the live Phase 14 product)
 
+- **Admin is `is_admin` on a recruiter**, never `UserRole.ADMIN`, never settable via
+  `POST /auth/register`. Post-login landing stays `/recruiter`; `/admin` is extra routes.
+  Recruiter without the flag must not see **Admin** in the sidebar. Candidates must not.
+- **HTTP prefix `/admin`**, `require_admin` on every route (candidate / recruiter-without-flag
+  **403**; unauthenticated **401**). Missing UUIDs are **404**, not 403. Vite proxies `/admin`
+  the same way as `/scores`, with an HTML-document **bypass** so a browser refresh of the SPA
+  route `/admin` is not stolen by FastAPI (`GET /admin` itself is not a product endpoint).
+- **Users**: `GET /admin/users[?role=&is_active=]`, `GET /admin/users/{id}`,
+  `PATCH /admin/users/{id}` `{ is_active?, is_admin? }` (at least one field). Soft-disable via
+  `is_active` — no hard DELETE. `is_admin` is recruiters only (422 on a candidate). Self-deactivate
+  and self-revoke-admin are **409**. Deactivate does **not** bulk-revoke refresh token rows:
+  `get_current_user` already 401s inactive accounts, and `rotate_refresh_token` already refuses
+  them. Force-revoke-all on deactivate was not added (ask first).
+- **Postings**: `GET /admin/postings` lists **every** recruiter's jobs (do not widen
+  `GET /postings`). `PATCH /admin/postings/{id}` `{ is_active }` only. Does not collide with
+  `GET /jobs/{id}` (async job status).
+- **Sessions / scores**: `GET /admin/sessions` and `GET /admin/scores` are ops listings across
+  candidates, **practice included**. Do not reuse `GET /interviews` (caller history; recruiters
+  403). Do not recompute composites; read stored `Score` rows. Omitted communication stays JSON
+  `null` / UI **Not recorded**.
+- **Frontend**: Admin nav enabled for `user.isAdmin` only. Tabs: Users, Postings, Sessions, Scores.
+  Candidate Overview, Resume, Matches, Interview, recruiter Jobs, recruiter Candidates, queue demo,
+  and session-page Download report stay. Recruiter still has no Interview screen.
+- **No new Alembic revision.** Head stays `b7e4c19a5d03`. `alembic check` reports no new ops.
+- **Tests**: `backend/tests/test_admin.py` (401/403, list/filter, deactivate + me/refresh 401,
+  self-409, `is_admin` recruiter-only, cross-recruiter postings, practice on session/score lists,
+  unknown UUID 404). Full suite **150 passed** (138 prior + 12 new) against live Docker Postgres
+  and Redis. Frontend `npm run lint` (existing shadcn oxlint warnings only) and `npm run build`.
+  numpy stayed **1.26.4**.
+- **Granting the first admin**: registration cannot set the flag. In Postgres:
+
+  ```sql
+  UPDATE users SET is_admin = true WHERE email = 'you@example.com' AND role = 'recruiter';
+  ```
+
+  Or Grant admin on an existing recruiter from `/admin` once one operator already has the flag.
+- **Non-goals this phase**: no hardening (no seed/demo script, no architecture-diagram README
+  rewrite, no deployment compose profile), no `UserRole.ADMIN`, no WebSockets, no second LLM
+  client, no openai-whisper, no new Whisper download, no rebuilding `ml/speech` / `ml/llm` /
+  `ml/interview` / `ml/scoring` or the analysis/dashboard UIs, no making audio the only answer
+  type, no coding-assessment module, no MinIO, no ReportLab.
 
 ## Local dev setup
 
@@ -543,7 +585,8 @@ If another project already owns 8000/5173 (common on this machine), use **8001**
   ```
    CORS also allows the `127.0.0.1` twin of that origin. Do not drop that helper.
 2. Leave `frontend/.env` `VITE_API_BASE_URL` **empty** in local `npm run dev`. Vite proxies
-  `/auth`, `/health`, `/jobs`, `/resumes`, `/postings`, `/matches`, and `/interviews` to `http://127.0.0.1:8001`.
+  `/auth`, `/health`, `/jobs`, `/resumes`, `/postings`, `/matches`, `/interviews`, `/scores`,
+  `/reports`, and `/admin` to `http://127.0.0.1:8001`.
    Setting a cross-origin API URL reintroduces localhost vs 127.0.0.1 CORS traps.
 3. Start the processes with matching flags (restart both after changing env):
   ```bash
@@ -832,17 +875,50 @@ curl -s http://localhost:8000/interviews \
 # -> [{id, resume_id, job_id, posting_title, status, composite_score, ...}, ...] newest first
 ```
 
+Admin ops (Phase 15; `require_admin` — recruiter with `is_admin=true` set in the database, never via register).
+Swap `8000` for `8001` if that is the port you bound. Non-admin callers are 403; missing ids are 404.
+
+```bash
+# List users (optional ?role=candidate&is_active=true)
+curl -s http://localhost:8000/admin/users \
+  -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>"
+
+# Soft-disable (no hard DELETE). Existing access JWTs fail GET /auth/me immediately.
+curl -s -X PATCH http://localhost:8000/admin/users/<USER_ID> \
+  -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"is_active": false}'
+
+# Cross-recruiter postings (GET /postings stays own-only)
+curl -s http://localhost:8000/admin/postings \
+  -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>"
+
+# Sessions and stored scores, practice included (not GET /interviews)
+curl -s http://localhost:8000/admin/sessions \
+  -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>"
+curl -s http://localhost:8000/admin/scores \
+  -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>"
+```
+
+First admin (operator, do not commit a seed script):
+
+```bash
+docker compose exec db psql -U aiip_user -d aiip_db \
+  -c "UPDATE users SET is_admin = true WHERE email = 'you@example.com' AND role = 'recruiter';"
+```
+
+
 
 
 ### Frontend — lint, build, auth, resume, matches, and interview walkthrough
 
 The Vite+shadcn scaffold has the shell, candidate dashboard (score summary / history / skill-gap),
 resume upload/results, Matches, recruiter Jobs, recruiter Candidates (ranking / compare / Recharts /
-PDF), and the candidate interview session (text + optional MediaRecorder + transcript viewer + dual
-fluency cards). Backend, Postgres, Redis, the ARQ worker, and a reachable LLM (local Ollama by
-default) must be up for the interview steps. CORS allows `FRONTEND_ORIGIN` and its `127.0.0.1`
-twin (this machine: `http://localhost:5174`). See **Ports, CORS, and sharing the machine with
-another app** above.
+PDF), the candidate interview session (text + optional MediaRecorder + transcript viewer + dual
+fluency cards), and **Admin** (users / postings / sessions / scores) for `is_admin` recruiters.
+Backend, Postgres, Redis, the ARQ worker, and a reachable LLM (local Ollama by default) must be up
+for the interview steps. CORS allows `FRONTEND_ORIGIN` and its `127.0.0.1` twin (this machine:
+`http://localhost:5174`). See **Ports, CORS, and sharing the machine with another app** above.
 
 ```bash
 cd "Project-2 MLIS/ai-interview-platform/frontend"
@@ -858,8 +934,8 @@ Manual UI checks (with `npm run dev` and the API on `:8001`):
 3. Sign out. Register a **recruiter**. You should land on `/recruiter`. Visiting `/candidate` as a recruiter should bounce you back to `/recruiter`. Recruiters have no Resume nav. **Candidates** is live (`/recruiter/candidates`).
 4. Sign out, sign back in with the same account — session restore from localStorage (`aiip.auth.tokens`) should skip the forms.
 5. Reload the page while signed in — `/auth/me` should repopulate the shell. If the access JWT has expired, the client will rotate the opaque refresh token via `POST /auth/refresh` without a visible logout.
-6. A recruiter with `is_admin=true` (set in the database by an operator, never via register) shows a disabled **Admin** row. There is no admin dashboard in this phase (`admin-ops` is next).
-7. On `/candidate`, click **Run demo job** (API + Redis + worker must be up). Status should move queued → running → succeeded and show the echo text. Leave `frontend/.env` `VITE_API_BASE_URL` empty so `/jobs`, `/resumes`, `/postings`, `/matches`, `/interviews`, `/scores`, and `/reports` stay same-origin through the Vite proxy.
+6. A recruiter **without** `is_admin` must **not** see **Admin** in the sidebar. Visiting `/admin` as that recruiter should bounce you back to `/recruiter` (SPA), not show a FastAPI JSON 404. A recruiter with `is_admin=true` (set in the database by an operator, never via register — see the SQL snippet above) shows a live **Admin** row and an **Open admin** button. Registration still cannot set the flag.
+7. On `/candidate`, click **Run demo job** (API + Redis + worker must be up). Status should move queued → running → succeeded and show the echo text. Leave `frontend/.env` `VITE_API_BASE_URL` empty so `/jobs`, `/resumes`, `/postings`, `/matches`, `/interviews`, `/scores`, `/reports`, and `/admin` stay same-origin through the Vite proxy.
 8. Click **Resume** (or **Open resume upload**). Drop or pick a text-based PDF (≤ 10 MiB). A non-PDF should be rejected in the dropzone. After **Upload and parse**, you should land on the results page, see queued → running → succeeded, then sections, skill chips, and an ATS score. A PDF with no extractable text should show the failed job/resume states instead of a blank page.
 9. Sign out, sign in (or register) as a **recruiter**, open **Jobs** in the sidebar, and create a posting (title + description + optional comma-separated required skills). It should appear at the top of "Your postings" with an **Active** badge and an **Embedding…** badge; reload after a few seconds and the badge flips to **Embedded** once the worker finishes. Click **Deactivate** and confirm the badge flips to **Inactive**.
 10. Sign back in as the candidate whose resume you parsed in step 8, open **Matches** in the sidebar. You should see the posting from step 9 (if still active) with a similarity-score bar and skill chips split into "You have" (matched) and "Skill gap" (missing). A candidate with no parsed resume yet should see the "no parsed resume yet" empty state with a link back to `/candidate/resume` instead of an error.
@@ -868,6 +944,7 @@ Manual UI checks (with `npm run dev` and the API on `:8001`):
 13. Optional: in Chromium, click **Start recording**, allow the microphone, speak, **Stop**, then **Upload recording**. The level meter / waveform should move while recording. Retry overwrites the stored blob and re-queues transcribe. Safari is not supported. Audio upload does **not** score the answer; text submit is what enqueues the judge. Transcribe status should move queued → running → succeeded, then the **full transcript** (not a truncated snippet), **word timings** (tap a token for start/end/probability), and **both fluency arms** plus a short prosody summary appear. Text-only answers show empty transcript/fluency copy instead of invented zeros. Switch questions: evaluation, transcript, and fluency stay per-answer and must not leak onto the next row. Recruiter still has no Interview / analysis screen. A PDF for a text-only completed session still downloads; it must not invent fluency numbers.
 14. After a completed session, open **Overview** (`/candidate`). You should see a score summary (composite + four signals; communication **Not recorded** on text-only), interview history with a link back to `/candidate/interview/:sessionId`, skill-gap chips from Matches, and recommendations derived from those facts (not an LLM essay). Empty states: no parsed resume, no sessions, in_progress with no score yet. Repeat on a mobile viewport (~390×844).
 15. Sign in as the recruiter, open **Candidates**. Pick an owned posting. The ranking table should list completed scored sessions (practice interviews omitted). Sort/filter without changing stored numbers. Check two rows, click **Compare selected**, and confirm side-by-side signals. Recharts should show score distribution plus required-skills from the posting (not MiniLM). Click **PDF** on a row — same `GET /reports/{id}` as the candidate session button. Repeat ranking → compare → PDF on a mobile viewport. Recruiter still has no Interview screen.
+16. Sign in as an `is_admin` recruiter (flag set in the database). **Admin** should be in the sidebar. Open it: Users lists accounts; **Deactivate** a candidate (not yourself) and confirm the row shows Inactive / Reactivate. That candidate’s `POST /auth/login` should now be 401. Open **Postings** (other recruiters’ jobs), **Sessions** (practice included), and **Scores** (stored composites; communication **Not recorded** when omitted). Repeat Users → deactivate and Sessions/Scores on a mobile viewport (~390×844). A recruiter without the flag must still hide Admin. Recruiter still has no Interview screen.
 
 `GET /` on the API still 404s; use `/health` or `/docs` (and the port you actually bound).
 
@@ -886,7 +963,8 @@ plus a skippable live-Ollama smoke). The interview engine is covered by `test_ml
 `test_interviews.py` (fake provider + one skippable live generate+evaluate smoke, plus audio-upload
 enqueue). Speech is covered by `test_ml_speech.py` and `test_speech.py` (monkeypatched pipeline +
 one skippable live ffmpeg/Whisper smoke). Scoring is covered by `test_ml_scoring.py` and
-`test_scores.py` (fake provider; PDF skips if WeasyPrint/cairo is missing).
+`test_scores.py` (fake provider; PDF skips if WeasyPrint/cairo is missing). Admin ops are
+covered by `backend/tests/test_admin.py` (no live generate).
 
 You can also exercise `ml/resume`, `ml/matching`, `ml/llm`, `ml/speech`, and `ml/scoring` directly, without the API/worker:
 
@@ -1000,4 +1078,4 @@ cd "/home/sam/projects/Project-2 MLIS/ai-interview-platform" && \
   uv sync && docker compose up -d && uv run alembic upgrade head && uv run pytest -q
 ```
 
-Worker (separate process, repo root): `uv run arq app.workers.settings.WorkerSettings`. SPA: `cd frontend && npm install && npm run dev` (leave `VITE_API_BASE_URL` empty so `/auth`, `/health`, `/jobs`, `/resumes`, `/postings`, `/matches`, `/interviews`, `/scores`, and `/reports` stay same-origin via the Vite proxy).
+Worker (separate process, repo root): `uv run arq app.workers.settings.WorkerSettings`. SPA: `cd frontend && npm install && npm run dev` (leave `VITE_API_BASE_URL` empty so `/auth`, `/health`, `/jobs`, `/resumes`, `/postings`, `/matches`, `/interviews`, `/scores`, `/reports`, and `/admin` stay same-origin via the Vite proxy).

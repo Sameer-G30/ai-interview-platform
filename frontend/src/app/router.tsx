@@ -1,10 +1,16 @@
 import { createBrowserRouter } from "react-router-dom" // data-router used by RouterProvider in App.tsx
 
+import { RequireAdmin } from "@/components/auth/require-admin" // is_admin recruiter only; others bounce to role home
 import { RequireAuth } from "@/components/auth/require-auth" // session required; redirects to /login
 import { RequireGuest } from "@/components/auth/require-guest" // logged-in users skip login/register
 import { RequireRole } from "@/components/auth/require-role" // candidate cannot open /recruiter and vice versa
 import { RoleLanding } from "@/components/auth/role-landing" // `/` -> login or role home
 import { AppShell } from "@/components/layout/app-shell" // sidebar + header around authenticated pages
+import { AdminLayout } from "@/pages/admin-layout" // /admin tab chrome (users/postings/sessions/scores)
+import { AdminPostingsPage } from "@/pages/admin-postings-page" // cross-recruiter posting list
+import { AdminScoresPage } from "@/pages/admin-scores-page" // stored Score audit including practice
+import { AdminSessionsPage } from "@/pages/admin-sessions-page" // session audit including practice
+import { AdminUsersPage } from "@/pages/admin-users-page" // list users + PATCH is_active
 import { CandidateHomePage } from "@/pages/candidate-home-page" // candidate landing
 import { CandidateInterviewSessionPage } from "@/pages/candidate-interview-session-page" // poll generate, answer, poll evaluate
 import { CandidateInterviewStartPage } from "@/pages/candidate-interview-start-page" // practice start (POST /interviews {})
@@ -108,6 +114,22 @@ export const router = createBrowserRouter([
                 <RecruiterCandidatesPage />
               </RequireRole>
             ),
+          },
+          {
+            path: "/admin", // extra routes for is_admin recruiters; post-login landing stays /recruiter
+            element: (
+              <RequireRole role="recruiter">
+                <RequireAdmin>
+                  <AdminLayout />
+                </RequireAdmin>
+              </RequireRole>
+            ),
+            children: [
+              { index: true, element: <AdminUsersPage /> }, // PATCH is_active
+              { path: "postings", element: <AdminPostingsPage /> }, // all recruiters' jobs
+              { path: "sessions", element: <AdminSessionsPage /> }, // practice included
+              { path: "scores", element: <AdminScoresPage /> }, // stored composites
+            ],
           },
         ],
       },
