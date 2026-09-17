@@ -901,12 +901,10 @@ curl -s http://localhost:8000/admin/scores \
 ```
 
 First admin (operator, do not commit a seed script):
-
 ```bash
 docker compose exec db psql -U aiip_user -d aiip_db \
   -c "UPDATE users SET is_admin = true WHERE email = 'you@example.com' AND role = 'recruiter';"
 ```
-
 
 
 
