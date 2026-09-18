@@ -899,7 +899,6 @@ curl -s http://localhost:8000/admin/sessions \
 curl -s http://localhost:8000/admin/scores \
   -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>"
 ```
-
 First admin (operator, do not commit a seed script):
 
 ```bash
