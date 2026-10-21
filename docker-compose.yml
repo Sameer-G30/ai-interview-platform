@@ -1,6 +1,8 @@
-# docker-compose.yml — local dev infrastructure only (Postgres+pgvector, Redis).
-# The FastAPI app and ARQ workers run on the host via `uv run`, not as containers here,
-# so hot-reload stays fast; a deployment profile is added in the hardening phase.
+# docker-compose.yml — local Postgres+pgvector and Redis for `uv run` on the host.
+# `docker compose up -d` starts only those two. The API and the ARQ worker stay on the host
+# so reload stays fast. `docker compose --profile deploy up -d` adds the API and the worker
+# containers without moving host ports 5432, 6379, 8001, or 5174. The API container listens
+# on 8000 inside the network and is published on DEPLOY_API_PORT (default 8002).
 
 services:
   # Postgres with the pgvector extension pre-installed, used for relational data + embeddings.
@@ -34,5 +36,76 @@ services:
       timeout: 3s
       retries: 10
 
+  # Deploy-profile API. Not started by plain `docker compose up`. Migrates, then serves on container port 8000.
+  api:
+    profiles: ["deploy"]  # opt-in; the host `uv run uvicorn --port 8001` workflow does not use this
+    image: ai-interview-platform:local  # shared with the worker so Compose builds one image
+    build:
+      context: .  # repo root: pyproject.toml, backend/, and ml/
+      dockerfile: backend/docker/Dockerfile  # Python 3.11 + uv sync; no model download at build time
+      network: host  # the bridge blocks HTTP to deb.debian.org; host network can apt-get and uv sync
+    restart: unless-stopped  # same policy as db and redis
+    env_file:
+      - path: .env  # gitignored secrets (JWT, password). Missing file is fine; defaults below still boot
+        required: false  # `docker compose config` works before someone has copied .env.example
+    environment:
+      # Override the host .env localhost DSNs. Inside the compose network the hostnames are the service names.
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-aiip_user}:${POSTGRES_PASSWORD:-change_me_locally}@db:5432/${POSTGRES_DB:-aiip_db}"
+      REDIS_URL: "redis://redis:6379/0"  # broker shared with the worker; not the host's published port
+      STORAGE_ROOT: "/data/blobs"  # shared volume so a resume uploaded to the API is visible to the worker
+      # Host `uv run` keeps OLLAMA_BASE_URL from .env (localhost). The container cannot use that localhost.
+      OLLAMA_BASE_URL: "${DEPLOY_OLLAMA_BASE_URL:-http://host.docker.internal:11434}"
+      # Host .env says cuda for the RTX 4060. This container does not request a GPU, so default to cpu.
+      WHISPER_DEVICE: "${DEPLOY_WHISPER_DEVICE:-cpu}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # Linux/WSL2 name for the host running Ollama
+    ports:
+      - "${DEPLOY_API_PORT:-8002}:8000"  # 8002 on purpose; 8001 stays the host uvicorn port
+    volumes:
+      - aiip-blobs:/data/blobs  # resume PDFs and interview audio
+    depends_on:
+      db:
+        condition: service_healthy  # migrations need Postgres to accept connections
+      redis:
+        condition: service_healthy  # the API opens an ARQ pool in lifespan
+    command: ["sh", "/app/backend/docker/api-entrypoint.sh"]  # alembic upgrade head, then uvicorn
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      interval: 5s  # how often to probe /health
+      timeout: 5s  # one probe may take this long
+      retries: 20  # cold import of the app can be slow the first time
+      start_period: 30s  # alembic plus uvicorn import; do not count those seconds as failures
+
+  # Deploy-profile worker. Same image as the API. No host port. Does not run migrations (the API does).
+  worker:
+    profiles: ["deploy"]  # opt-in, same switch as the API
+    image: ai-interview-platform:local  # built by the api service; do not pull from a registry
+    pull_policy: never  # one build, on the api service; do not start a second uv sync in parallel
+    restart: unless-stopped  # keep draining the queue across crashes
+    env_file:
+      - path: .env  # same secrets as the API
+        required: false  # optional, matching the API service
+    environment:
+      DATABASE_URL: "postgresql+asyncpg://${POSTGRES_USER:-aiip_user}:${POSTGRES_PASSWORD:-change_me_locally}@db:5432/${POSTGRES_DB:-aiip_db}"
+      REDIS_URL: "redis://redis:6379/0"  # must match the API or jobs stay queued forever
+      STORAGE_ROOT: "/data/blobs"  # read the PDFs and WebM files the API wrote
+      OLLAMA_BASE_URL: "${DEPLOY_OLLAMA_BASE_URL:-http://host.docker.internal:11434}"  # judge on the host, not in this image
+      WHISPER_DEVICE: "${DEPLOY_WHISPER_DEVICE:-cpu}"  # set DEPLOY_WHISPER_DEVICE=cuda only if the container has a GPU
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # reach host Ollama from the worker
+    volumes:
+      - aiip-blobs:/data/blobs  # same files the API stored
+      - hf-cache:/root/.cache/huggingface  # MiniLM and Whisper weights survive a container recreate; not in git
+    depends_on:
+      api:
+        condition: service_healthy  # wait until alembic upgrade head has finished and /health answers
+      redis:
+        condition: service_healthy  # ARQ broker
+      db:
+        condition: service_healthy  # the worker writes resumes, answers, and scores
+    command: ["arq", "app.workers.settings.WorkerSettings"]  # long-running worker; not the burst helper
+
 volumes:
   pgdata:   # named volume backing postgres's data directory across container restarts/recreation
+  aiip-blobs:  # deploy-profile uploads; the host `uv run` path still uses ./data/blobs and does not mount this
+  hf-cache:  # deploy-profile Hugging Face cache; host uv run keeps using ~/.cache/huggingface

@@ -1,0 +1,22 @@
+# Build context exclusions for backend/docker/Dockerfile. Comments are supported here.
+# Host virtualenv. The image builds its own.
+.venv
+# Frontend dependencies and build output. The image does not run Vite.
+frontend/node_modules
+frontend/dist
+# Git metadata.
+.git
+# Local secrets. Compose injects .env at runtime; it must not be baked into the image.
+.env
+# Uploaded PDFs, audio, and generated reports.
+data
+# Model weights. The image does not wget Whisper or MiniLM during build.
+models
+datasets
+# Python and tool caches.
+**/__pycache__
+.pytest_cache
+.ruff_cache
+# Sample media that must never enter an image layer.
+**/*.pdf
+**/*.webm

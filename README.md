@@ -1,7 +1,6 @@
 # AI Interview Intelligence Platform
 
-Status: **Phase 15 of 15 complete (admin-ops)**. Full architecture diagram, seed/demo scripts, and
-deployment profile land in the hardening phase per the build plan.
+Status: **Phase 16 of 16 complete (hardening)**. This is the last phase in the build plan.
 
 ## What this is
 
@@ -9,13 +8,55 @@ A FastAPI + ARQ + `ml/` backend and a React/Vite/shadcn frontend implementing an
 end-to-end AI-assisted interview platform: resume parsing, job matching, an LLM-driven
 interview engine, speech/prosody analysis, and weighted scoring with reports.
 
+## Architecture
+
+The API process never runs a model. A request validates input, writes Postgres (including an
+`async_jobs` row), enqueues a Redis job, and returns. The ARQ worker is the only process that
+calls `ml/`. The SPA polls `GET /jobs/{id}` and then reads the stored row. `GET` handlers do not
+recompute scores or load MiniLM, Whisper, or Ollama.
+
+```mermaid
+flowchart TB
+  subgraph spa ["React SPA"]
+    guards["Login, route guards, role homes"]
+    productUi["Resume, matches, interview, dashboards, admin"]
+  end
+  subgraph api ["FastAPI"]
+    http["Auth, resumes, postings, matches, interviews, scores, reports, jobs, admin"]
+  end
+  redis[("Redis")]
+  subgraph worker ["ARQ worker"]
+    jobTypes["resume_parse, posting_embed, interview_generate, interview_evaluate, transcribe"]
+  end
+  subgraph mlbox ["ml"]
+    pieces["resume, matching, llm, interview, speech, scoring"]
+  end
+  db[("Postgres + pgvector")]
+  blobs[("Local blobs")]
+
+  spa -->|"JSON and multipart"| api
+  api -->|"enqueue after commit"| redis
+  redis --> worker
+  worker --> mlbox
+  api --> db
+  worker --> db
+  api --> blobs
+  worker --> blobs
+```
+
+`ml.llm` is Ollama by default, or `openai_compat` via `LLM_PROVIDER`. Matching stores
+`all-MiniLM-L6-v2` vectors in pgvector. Speech is faster-whisper plus Silero and Praat, and it
+keeps both fluency arms. Scoring renormalizes the configured weights over the signals that exist.
+Text-only sessions omit communication. They do not store it as 0.
+
 ## Layout
 
 - `backend/` — FastAPI app, Alembic migrations, tests
 - `ml/` — pluggable ML code (LLM provider, resume parsing, matching, speech, scoring),
 shared by the backend workers and a separate research harness
 - `frontend/` — React + Vite + TypeScript + Tailwind + shadcn/ui
-- `docker-compose.yml` — local Postgres+pgvector and Redis
+- `scripts/seed_demo.py` — idempotent demo candidate, recruiter, and admin recruiter
+- `docker-compose.yml` — Postgres+pgvector and Redis for host `uv run`; profile `deploy` adds the API and the worker
 
 
 
@@ -518,15 +559,50 @@ interview dashboard.
 - **Granting the first admin**: registration cannot set the flag. In Postgres:
 
   ```sql
-  UPDATE users SET is_admin = true WHERE email = 'you@example.com' AND role = 'recruiter';
+  UPDATE users SET is_admin = true WHERE email = 'you@example.com' AND role = 'RECRUITER';
   ```
 
-  Or Grant admin on an existing recruiter from `/admin` once one operator already has the flag.
-- **Non-goals this phase**: no hardening (no seed/demo script, no architecture-diagram README
-  rewrite, no deployment compose profile), no `UserRole.ADMIN`, no WebSockets, no second LLM
+  The JSON API says `"recruiter"`. The Postgres enum label is `RECRUITER` (the Python member
+  name). `role = 'recruiter'` is an invalid enum value and the statement errors. Or Grant admin
+  on an existing recruiter from `/admin` once one operator already has the flag.
+- **Non-goals this phase**: seed script, architecture diagram, and the deploy profile were left
+  for Phase 16 (they are in the repo now). Also no `UserRole.ADMIN`, no WebSockets, no second LLM
   client, no openai-whisper, no new Whisper download, no rebuilding `ml/speech` / `ml/llm` /
   `ml/interview` / `ml/scoring` or the analysis/dashboard UIs, no making audio the only answer
   type, no coding-assessment module, no MinIO, no ReportLab.
+
+### Phase 16 — hardening (on the live Phase 15 product)
+
+- **Did not rebuild** Phases 1–15: admin HTTP, the Admin UI, dashboards, scoring, speech, the
+  interview engine, or the LLM provider. No new Alembic revision. Head stays `b7e4c19a5d03`.
+- **Backend tests** in `backend/tests/test_core_flows.py` cover the gaps the endpoint files did
+  not: registration cannot grant `is_admin` and rejects role `"admin"`, email is lowercased,
+  inactive login matches the bad-password detail, empty and oversize uploads write nothing,
+  upload → parse (with `embed_text` monkeypatched, not MiniLM) → text submit writes a
+  renormalized composite, and audio upload leaves `GET /scores` at 404. The default suite still
+  does not call live Ollama, Whisper, or MiniLM from these new tests. Full suite **157 passed**
+  (150 prior + 7). `POST /resumes` stays 10/minute; tests reset the in-memory limiter between
+  cases so that shared `127.0.0.1` budget does not 429.
+- **Frontend smoke tests** use Vitest and jsdom (`npm test`, 9 cases). They log in through the
+  real form and check the existing guards: candidate → `/candidate`, recruiter → `/recruiter`,
+  `is_admin` still lands on `/recruiter` and can open `/admin`, and the other persona is bounced
+  home. Playwright was not added. `npm run lint` still warns only on generated shadcn
+  `button.tsx` / `sidebar.tsx`. `npm run build` succeeds.
+- **Seed**: `uv run python scripts/seed_demo.py` from the repo root. It creates
+  `demo-candidate@example.com`, `demo-recruiter@example.com`, and `demo-admin@example.com`,
+  then sets the admin flag with the SQL above. Re-running it does not wipe Postgres, does not
+  reset passwords, and does not touch the phase15 accounts. The demo posting is inserted without
+  an embedding and without enqueueing `posting_embed`. Password: `SEED_DEMO_PASSWORD` or the
+  placeholder in `.env.example`. The script prints a non-default password's name, not its value.
+- **Deploy profile**: `docker compose up -d` is still only Postgres and Redis, for host
+  `uv run`. `docker compose --profile deploy up -d --build` adds the API and the ARQ worker.
+  The API container is published on `DEPLOY_API_PORT` (default **8002**), not 8001. See
+  [Deployment profile](#deployment-profile) below.
+- **Non-goals**: no `UserRole.ADMIN`, no force-revoke-all on deactivate, no making every score
+  signal compulsory, no text-proxy communication score, no audio-only answers, no copying the
+  transcript into `answer_text`, no WebSockets, no second LLM client, no openai-whisper, no
+  Whisper download from pytest or from the image build, no coding-assessment module, no MinIO,
+  no ReportLab, no separate vector database.
 
 ## Local dev setup
 
@@ -609,6 +685,35 @@ If another project already owns 8000/5173 (common on this machine), use **8001**
 If `/health` or `/docs` belong to a **different** app (OpenAPI title should be
 `AI Interview Intelligence Platform`), you are hitting the wrong process on that port.
 
+### Deployment profile
+
+Host `uv run` stays the day-to-day path. The compose file's `deploy` profile is an extra pair of
+containers. It does not replace Postgres or Redis, and it does not bind host ports 5432, 6379,
+8001, or 5174.
+
+```bash
+cd "Project-2 MLIS/ai-interview-platform"
+docker compose up -d                              # still only db + redis
+docker compose --profile deploy up -d --build     # also API on host port 8002, plus the ARQ worker
+curl -s http://127.0.0.1:8002/health              # container API; host uvicorn can stay on 8001
+```
+
+The image installs Python dependencies with `uv sync`. It does not download Whisper or MiniLM
+weights; the worker fetches those on first use into the `hf-cache` volume. Uploads go to the
+`aiip-blobs` volume (`STORAGE_ROOT=/data/blobs`), shared by the API and the worker. The API
+container runs `alembic upgrade head` before uvicorn. The worker waits until `/health` succeeds.
+
+`OLLAMA_BASE_URL` inside the containers defaults to `http://host.docker.internal:11434` so the
+judge can see Ollama on the host. `WHISPER_DEVICE` inside the containers defaults to `cpu`
+because this profile does not attach a GPU. The host `.env` values for those two settings are
+what `uv run` still uses. Override the container copies with `DEPLOY_OLLAMA_BASE_URL` and
+`DEPLOY_WHISPER_DEVICE` if you need to. The Vite dev server keeps proxying to
+`http://127.0.0.1:8001`. Point it at the container only by setting `AIIP_API_PROXY=http://127.0.0.1:8002`
+when you start Vite. Leave `VITE_API_BASE_URL` empty either way.
+
+`docker compose stop api worker` leaves db and redis running for `uv run`. Do not use
+`docker compose down -v`; that deletes the Postgres volume.
+
 ## How to test what's implemented
 
 
@@ -628,7 +733,7 @@ uv run alembic downgrade -1      # rolls back Phase 2's table migration cleanly
 uv run alembic upgrade head      # re-applies it; confirms no drift either direction
 uv run alembic check             # confirms models == live schema, no missing migration
 
-# Full test suite (health + auth + jobs + resumes + matching + ml.llm + interviews + speech), against live Postgres and Redis
+# Full test suite, against live Postgres and Redis. Default tests do not call live Ollama or Whisper.
 uv run pytest -q
 ```
 
@@ -900,12 +1005,28 @@ curl -s http://localhost:8000/admin/scores \
   -H "Authorization: Bearer <ADMIN_ACCESS_TOKEN>"
 ```
 
-First admin (operator, do not commit a seed script):
+First admin, by hand. The JSON role is `"recruiter"`; the Postgres label is `RECRUITER`.
+`scripts/seed_demo.py` runs this statement for `demo-admin@example.com` and is safe to re-run.
 
 ```bash
 docker compose exec db psql -U aiip_user -d aiip_db \
-  -c "UPDATE users SET is_admin = true WHERE email = 'you@example.com' AND role = 'recruiter';"
+  -c "UPDATE users SET is_admin = true WHERE email = 'you@example.com' AND role = 'RECRUITER';"
 ```
+
+### Demo accounts
+
+From the repo root, with Postgres up and migrations applied. This does not truncate any table.
+
+```bash
+uv run python scripts/seed_demo.py
+```
+
+It creates `demo-candidate@example.com`, `demo-recruiter@example.com`, and
+`demo-admin@example.com` when those emails are missing, then sets `is_admin` on the admin
+address with the SQL above. The password is `SEED_DEMO_PASSWORD` if set, otherwise the
+placeholder in `.env.example` (`change_me_locally`). A second run leaves existing passwords
+alone. The demo posting "Demo platform engineer" has no embedding until something actually
+runs `posting_embed`. This script does not enqueue that job.
 
 
 
@@ -1067,7 +1188,7 @@ Every push/PR runs `.github/workflows/ci.yml`:
 
 - **Backend job**: Postgres+pgvector and Redis as service containers, then `alembic upgrade head`,
 `ruff check .`, and `pytest -q`.
-- **Frontend job**: `npm ci`, `npm run lint`, `npm run build` in `frontend/`.
+- **Frontend job**: `npm ci`, `npm run lint`, `npm test` (Vitest smoke), and `npm run build` in `frontend/`.
 
 
 
@@ -1078,4 +1199,4 @@ cd "/home/sam/projects/Project-2 MLIS/ai-interview-platform" && \
   uv sync && docker compose up -d && uv run alembic upgrade head && uv run pytest -q
 ```
 
-Worker (separate process, repo root): `uv run arq app.workers.settings.WorkerSettings`. SPA: `cd frontend && npm install && npm run dev` (leave `VITE_API_BASE_URL` empty so `/auth`, `/health`, `/jobs`, `/resumes`, `/postings`, `/matches`, `/interviews`, `/scores`, `/reports`, and `/admin` stay same-origin via the Vite proxy).
+Worker (separate process, repo root): `uv run arq app.workers.settings.WorkerSettings`. SPA: `cd frontend && npm install && npm test && npm run dev` (leave `VITE_API_BASE_URL` empty so `/auth`, `/health`, `/jobs`, `/resumes`, `/postings`, `/matches`, `/interviews`, `/scores`, `/reports`, and `/admin` stay same-origin via the Vite proxy). Demo accounts: `uv run python scripts/seed_demo.py` (does not wipe Postgres). Container API+worker, optional: `docker compose --profile deploy up -d --build` (host port 8002; host uvicorn stays on 8001).

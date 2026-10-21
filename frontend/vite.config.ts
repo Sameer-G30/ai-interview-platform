@@ -1,7 +1,7 @@
 import path from "path" // node's path module, used to resolve the "@/*" alias to an absolute directory
 import tailwindcss from "@tailwindcss/vite" // Tailwind v4's first-party Vite plugin (no separate postcss config needed)
 import react from "@vitejs/plugin-react" // enables JSX/Fast Refresh for .tsx files
-import { defineConfig } from "vite" // typed config helper from Vite itself
+import { defineConfig } from "vitest/config" // Vite config plus the single Vitest runner (no second test tool)
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -66,5 +66,12 @@ export default defineConfig({
         },
       },
     },
+  },
+  // Node-level smoke tests. They render the real route tree in jsdom; they do not open a browser.
+  test: {
+    environment: "jsdom", // DOM for React Testing Library without Playwright
+    setupFiles: ["./src/smoke/setup.ts"], // matchMedia stub + testing-library cleanup
+    include: ["src/smoke/**/*.test.tsx"], // one suite; do not add a second runner
+    css: false, // class names are enough; do not compile Tailwind during smoke tests
   },
 })

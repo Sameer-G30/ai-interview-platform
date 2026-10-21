@@ -9,6 +9,7 @@ import pytest  # pytest.fixture decorator and the fixture machinery itself
 from httpx import ASGITransport, AsyncClient  # in-process HTTP client, no real network/port needed
 
 from app.core.db import AsyncSessionLocal, engine  # session factory + the shared engine's connection pool
+from app.core.rate_limit import limiter  # in-memory slowapi counters; every test shares 127.0.0.1
 from app.core.redis import close_arq_pool, create_arq_pool  # live Redis pool for job-queue tests
 from app.main import app  # the FastAPI app under test
 from app.models.answer import Answer  # each model imported explicitly so cleanup can target its table
@@ -64,6 +65,7 @@ async def _clean_database_and_dispose_engine():
     "Future attached to a different loop". Disposing forces the pool to open brand-new connections on
     next use, in whatever loop is current at that point.
     """
+    limiter.reset()  # a prior test's 10/minute upload budget must not 429 the next test
     yield  # run the test first
     async with AsyncSessionLocal() as session:
         for model in _TABLES_CHILD_TO_PARENT:

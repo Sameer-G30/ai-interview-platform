@@ -24,8 +24,10 @@ import { RecruiterHomePage } from "@/pages/recruiter-home-page" // recruiter lan
 import { RecruiterJobsPage } from "@/pages/recruiter-jobs-page" // posting create/list/deactivate
 import { RegisterPage } from "@/pages/register-page" // POST /auth/register form
 
-// Route tree for the Phase 3 shell: guest forms, role homes, and a 404.
-export const router = createBrowserRouter([
+// Fresh objects on every call. createBrowserRouter mutates the array it receives, so a test
+// memory router must not reuse the production router's routes.
+export function buildAppRoutes() {
+  return [
   {
     path: "/", // index: bounce to /login or /candidate|/recruiter
     element: <RoleLanding />,
@@ -136,4 +138,8 @@ export const router = createBrowserRouter([
     ],
   },
   { path: "*", element: <NotFoundPage /> }, // unknown URLs
-])
+  ]
+}
+
+// Browser-history router mounted by App.tsx. Smoke tests call buildAppRoutes() themselves.
+export const router = createBrowserRouter(buildAppRoutes())

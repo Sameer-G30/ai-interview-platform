@@ -96,5 +96,8 @@ jobs:
       - name: Lint the frontend
         run: npm run lint                # oxlint; generated shadcn files may emit warnings, not errors
 
+      - name: Smoke-test the frontend
+        run: npm test                    # Vitest jsdom journey: login, role home, existing guards
+
       - name: Build the frontend
         run: npm run build               # tsc -b && vite build; fails the job on type or bundle errors
