@@ -11,7 +11,7 @@ export function ComparePanel({ scores }: { scores: ScoreOut[] }) {
         return (
           <Card key={score.session_id} size="sm">
             <CardHeader>
-              <CardTitle className="font-mono text-sm">{score.session_id.slice(0, 8)}…</CardTitle>
+              <CardTitle className="text-sm">Interview</CardTitle>
               <CardDescription>Composite {formatSignalScore(score.composite_score)}</CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-2">
@@ -22,7 +22,7 @@ export function ComparePanel({ scores }: { scores: ScoreOut[] }) {
                 </div>
               ))}
               {omitted.length > 0 ? (
-                <p className="text-xs text-muted-foreground">Omitted: {omitted.join(", ")}</p>
+                <p className="text-xs text-muted-foreground">Not recorded: {omitted.join(", ")}</p>
               ) : null}
             </CardContent>
           </Card>

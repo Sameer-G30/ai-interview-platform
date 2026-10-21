@@ -1,28 +1,33 @@
 """Integration tests for audio upload -> transcribe worker against live Docker Postgres and Redis.
 
-ASR/VAD/prosody are monkeypatched via `app.workers.tasks._run_speech_pipeline` so the default suite
-never loads faster-whisper, ffmpeg, or GPU weights. The one live smoke at the bottom skips (never
-fails) when ffmpeg, CUDA, or cached Whisper weights are missing — it must not wget models.
+ASR/VAD/prosody are monkeypatched via `app.workers.tasks._run_speech_pipeline` (shared `interview_fakes`)
+so the default suite never loads faster-whisper, ffmpeg, or GPU weights. Transcribe now copies the
+transcript into `answer_text` and enqueues the judge. The one live smoke at the bottom skips (never
+fails) when ffmpeg, CUDA, or cached Whisper weights are missing: it must not wget models.
 """
 
-from __future__ import annotations  # FakeSpeechResult helpers
-
-from uuid import UUID  # user ids returned by the register helper
+from __future__ import annotations  # annotations without quotes
 
 import pytest  # skip
-from ml.speech import SpeechPipelineResult, SpeechTranscribeError  # fake return / fail path
-from ml.speech.asr import AsrResult, WordTimestamp  # nested fakes
-from ml.speech.fluency import FluencyMetrics  # dual fluency arms
-from ml.speech.prosody import ProsodyMetrics  # Praat summaries
-from ml.speech.vad import Pause, SpeechSegment, VadResult  # VAD lists
+from interview_fakes import (  # one shared set of fakes and helpers
+    FAKE_EVALUATION_WEAK,
+    FAKE_FOLLOW_UP,
+    FakeInterviewBackend,
+    bearer,
+    create_user_with_tokens,
+    fake_speech_result,
+    insert_resume,
+    insert_session_with_questions,
+    install_failing_speech,
+    install_fake,
+    install_fake_speech,
+    speak,
+)
 
-from app.auth import service  # register_user/issue_token_pair
-from app.core.config import get_settings  # token expiry
-from app.core.db import AsyncSessionLocal  # insert session/answer rows without the LLM worker
-from app.models.answer import Answer  # assert transcript/metrics after the worker
-from app.models.enums import InterviewSessionStatus, ResumeStatus, UserRole  # insert helpers
-from app.models.interview_session import InterviewSession  # skip generate
-from app.models.resume import Resume  # parsed resume so the session FK is valid
+from app.core.config import get_settings  # live smoke reads WHISPER_* / FFMPEG_PATH
+from app.core.db import AsyncSessionLocal  # enqueue a transcribe job for a row with no audio
+from app.models.answer import Answer  # assert answer_text after the worker
+from app.models.enums import UserRole  # candidate
 from app.workers.enqueue import enqueue_job  # no-audio skip path enqueues without HTTP
 from app.workers.job_types import JOB_TYPE_TRANSCRIBE  # plain string
 from app.workers.settings import run_burst_worker  # in-process ARQ drain
@@ -30,249 +35,157 @@ from app.workers.settings import run_burst_worker  # in-process ARQ drain
 settings = get_settings()  # cached; tests share the process Settings with the app
 
 
-def _fake_fluency() -> FluencyMetrics:
-    """Deterministic fluency payload so tests can assert JSON keys without running Praat."""
-    return FluencyMetrics(
-        speech_rate_wpm=120.0,  # words / duration
-        articulation_rate_wpm=150.0,  # words / speaking
-        mean_pause_duration_s=0.4,  # one pause
-        pause_ratio=0.2,  # pause / total
-        filler_rate=0.0,  # no um/uh in the fake transcript
-        filler_count=0,  # matching rate
-        word_count=2,  # hello world
-        total_duration_s=1.0,  # wav clock
-        speaking_duration_s=0.8,  # minus pause
-        pause_duration_s=0.2,  # one gap
-        pause_count=1,  # one gap
-    )
+async def _candidate_with_session(email: str):
+    """Register a candidate and insert an in_progress session (technical + behavioral, unanswered)."""
+    token, user_id = await create_user_with_tokens(email, "StrongPass123", UserRole.CANDIDATE)
+    resume_id = await insert_resume(user_id)
+    session_id, answer_ids = await insert_session_with_questions(user_id, resume_id)
+    return token, user_id, session_id, answer_ids
 
 
-def _fake_result(transcript: str = "hello world") -> SpeechPipelineResult:
-    """Canned pipeline output. Tests monkeypatch `_run_speech_pipeline` to return this."""
-    words = [
-        WordTimestamp(word="hello", start=0.0, end=0.4, probability=0.9),  # first token
-        WordTimestamp(word="world", start=0.6, end=1.0, probability=0.8),  # second token
-    ]
-    return SpeechPipelineResult(
-        transcript=transcript,  # written to answers.transcript
-        asr=AsrResult(transcript=transcript, words=words, language="en", duration_s=1.0),  # Whisper arm
-        vad=VadResult(
-            speech_segments=[SpeechSegment(start=0.0, end=1.0)],  # one island
-            pauses=[Pause(start=0.4, end=0.6, duration=0.2)],  # internal gap
-            duration_s=1.0,  # wav clock
-        ),
-        prosody=ProsodyMetrics(
-            pitch_mean_hz=140.0,  # Hz
-            pitch_std_hz=10.0,  # Hz
-            intensity_mean_db=55.0,  # dB
-            intensity_std_db=4.0,  # dB
-        ),
-        fluency_transcript=_fake_fluency(),  # ASR-gap arm
-        fluency_acoustic=_fake_fluency(),  # VAD arm (same numbers in the fake)
-    )
+async def test_transcribe_copies_transcript_into_answer_text_and_enqueues_evaluate(client, redis_pool, monkeypatch):
+    """A successful take stores transcript + metrics + answer_text and returns the evaluate job id."""
+    install_fake(monkeypatch, FakeInterviewBackend())  # the chained evaluate job uses the fake judge
+    install_fake_speech(monkeypatch)  # no Whisper
+    token, _, session_id, answer_ids = await _candidate_with_session("sp-ok@example.com")
 
-
-def _install_fake_speech(monkeypatch: pytest.MonkeyPatch, result: SpeechPipelineResult | None = None) -> None:
-    """Point the worker at a canned pipeline so burst tests never load Whisper."""
-    canned = result if result is not None else _fake_result()  # default hello world
-
-    def _run(_audio_path: str) -> SpeechPipelineResult:
-        return canned  # ignore the tiny test webm; content-type is what upload validated
-
-    monkeypatch.setattr("app.workers.tasks._run_speech_pipeline", _run)  # looked up inside to_thread
-
-
-def _install_failing_speech(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make the worker raise a typed SpeechError so the async job fails with a short message."""
-
-    def _run(_audio_path: str) -> SpeechPipelineResult:
-        raise SpeechTranscribeError("ffmpeg is not installed")  # short message lands on async_jobs.error
-
-    monkeypatch.setattr("app.workers.tasks._run_speech_pipeline", _run)  # same patch point as success
-
-
-async def _create_user_with_tokens(email: str, password: str, role: UserRole) -> tuple[str, UUID]:
-    """Register a user via the service layer and return (access_token, user_id)."""
-    async with AsyncSessionLocal() as session:
-        user = await service.register_user(
-            session, email=email, password=password, full_name="Speech Tester", role=role
-        )
-        access_token, _ = await service.issue_token_pair(session, user=user, settings=settings)
-        await session.commit()
-        return access_token, user.id
-
-
-def _bearer(access_token: str) -> dict[str, str]:
-    """Build the Authorization header the interview routes expect."""
-    return {"Authorization": f"Bearer {access_token}"}  # access JWT, not the opaque refresh token
-
-
-async def _insert_resume(user_id: UUID) -> UUID:
-    """Insert a parsed resume so the session FK is valid without running spaCy/SBERT."""
-    async with AsyncSessionLocal() as session:
-        resume = Resume(
-            user_id=user_id,
-            file_path="/tmp/phase11-fake.pdf",  # never opened
-            original_filename="resume.pdf",
-            status=ResumeStatus.PARSED,
-            parsed_data={"skills": ["Python"], "sections": {}},
-            ats_score=70.0,
-        )
-        session.add(resume)
-        await session.commit()
-        return resume.id
-
-
-async def _insert_session_with_question(user_id: UUID, resume_id: UUID) -> tuple[UUID, UUID]:
-    """Insert an in_progress session plus one unanswered question so tests skip the LLM worker."""
-    async with AsyncSessionLocal() as session:
-        interview = InterviewSession(
-            user_id=user_id,
-            resume_id=resume_id,
-            status=InterviewSessionStatus.IN_PROGRESS,
-        )
-        session.add(interview)
-        await session.flush()  # need interview.id before the answers FK
-        answer = Answer(
-            session_id=interview.id,
-            question_order=0,
-            question_text="What is a Python list?",
-            question_kind="technical",
-            is_follow_up=False,
-        )
-        session.add(answer)
-        await session.commit()
-        return interview.id, answer.id
-
-
-def _tiny_webm() -> bytes:
-    """A few bytes labelled as WebM; the upload endpoint does not parse the container."""
-    return b"webm-test-bytes"  # ffmpeg would reject this; tests monkeypatch the pipeline
-
-
-async def test_transcribe_worker_writes_transcript_and_metrics(client, redis_pool, monkeypatch):
-    """After a burst worker, GET session has transcript + speech_metrics and still hides audio_path."""
-    _install_fake_speech(monkeypatch)  # no Whisper
-    token, user_id = await _create_user_with_tokens("sp-ok@example.com", "StrongPass123", UserRole.CANDIDATE)
-    resume_id = await _insert_resume(user_id)
-    session_id, answer_id = await _insert_session_with_question(user_id, resume_id)
-
-    uploaded = await client.post(
-        f"/interviews/{session_id}/answers/{answer_id}/audio",
-        files={"file": ("answer.webm", _tiny_webm(), "audio/webm")},
-        headers=_bearer(token),
-    )
+    uploaded = await speak(client, token, session_id, answer_ids[0])
     assert uploaded.status_code == 200
     job_id = uploaded.json()["async_job_id"]  # poll GET /jobs/{id}
 
-    await run_burst_worker()  # in-process ARQ; runs the monkeypatched pipeline
+    await run_burst_worker()  # transcribe, then the evaluate job it enqueued
 
-    polled = (await client.get(f"/jobs/{job_id}", headers=_bearer(token))).json()
+    polled = (await client.get(f"/jobs/{job_id}", headers=bearer(token))).json()
     assert polled["status"] == "succeeded"
     assert polled["result"]["skipped"] is False
+    assert polled["result"]["evaluate_enqueued"] is True
+    assert polled["result"]["evaluate_async_job_id"]  # the SPA polls this next
     assert polled["error"] is None
 
-    fetched = (await client.get(f"/interviews/{session_id}", headers=_bearer(token))).json()
-    row = fetched["answers"][0]
+    row = (await client.get(f"/interviews/{session_id}", headers=bearer(token))).json()["answers"][0]
     assert row["transcript"] == "hello world"  # plain text, not JSON
-    assert row["speech_metrics"] is not None
-    assert row["speech_metrics"]["words"][0]["word"] == "hello"  # timings for the later viewer
+    assert row["answer_text"] == "hello world"  # the transcript is the answer
+    assert row["speech_metrics"]["words"][0]["word"] == "hello"  # timings for the viewer
     assert "fluency_transcript" in row["speech_metrics"]  # ASR-gap arm
     assert "fluency_acoustic" in row["speech_metrics"]  # VAD arm
+    assert row["evaluation"] is not None  # the chained evaluate ran
     assert "audio_path" not in row  # filesystem path stays excluded
     assert row["has_audio"] is True
 
 
-async def test_transcribe_failure_leaves_transcript_null_and_short_error(client, redis_pool, monkeypatch):
-    """A typed SpeechError fails the async job; transcript/metrics stay null; session is not abandoned."""
-    _install_failing_speech(monkeypatch)
-    token, user_id = await _create_user_with_tokens("sp-fail@example.com", "StrongPass123", UserRole.CANDIDATE)
-    resume_id = await _insert_resume(user_id)
-    session_id, answer_id = await _insert_session_with_question(user_id, resume_id)
+async def test_empty_transcript_stores_metrics_but_does_not_evaluate(client, redis_pool, monkeypatch):
+    """Whisper hearing nothing is a successful job with no answer_text and no evaluate: record again."""
+    backend = FakeInterviewBackend()
+    install_fake(monkeypatch, backend)
+    install_fake_speech(monkeypatch, fake_speech_result(transcript="   "))  # silence
+    token, _, session_id, answer_ids = await _candidate_with_session("sp-empty@example.com")
 
-    uploaded = await client.post(
-        f"/interviews/{session_id}/answers/{answer_id}/audio",
-        files={"file": ("answer.webm", _tiny_webm(), "audio/webm")},
-        headers=_bearer(token),
-    )
-    job_id = uploaded.json()["async_job_id"]
-
+    uploaded = await speak(client, token, session_id, answer_ids[0])
     await run_burst_worker()
 
-    polled = (await client.get(f"/jobs/{job_id}", headers=_bearer(token))).json()
-    assert polled["status"] == "failed"
-    assert polled["error"]  # short summary for the poller
-    assert "SpeechTranscribeError" in polled["error"]
+    polled = (await client.get(f"/jobs/{uploaded.json()['async_job_id']}", headers=bearer(token))).json()
+    assert polled["status"] == "succeeded"
+    assert polled["result"]["evaluate_enqueued"] is False
+    assert polled["result"]["reason"] == "empty transcript"
+    assert "evaluate_async_job_id" not in polled["result"]
 
-    fetched = (await client.get(f"/interviews/{session_id}", headers=_bearer(token))).json()
+    row = (await client.get(f"/interviews/{session_id}", headers=bearer(token))).json()["answers"][0]
+    assert row["speech_metrics"] is not None  # measurements are kept
+    assert row["answer_text"] is None  # nothing to judge
+    assert row["evaluation"] is None
+    assert "AnswerEvaluation" not in backend.titles_called  # the judge was never called
+
+
+async def test_transcribe_failure_leaves_answer_text_null_and_short_error(client, redis_pool, monkeypatch):
+    """A typed SpeechError fails the async job; transcript/metrics/answer_text stay null; session not abandoned."""
+    install_failing_speech(monkeypatch)
+    token, _, session_id, answer_ids = await _candidate_with_session("sp-fail@example.com")
+
+    uploaded = await speak(client, token, session_id, answer_ids[0])
+    await run_burst_worker()
+
+    polled = (await client.get(f"/jobs/{uploaded.json()['async_job_id']}", headers=bearer(token))).json()
+    assert polled["status"] == "failed"
+    assert "SpeechTranscribeError" in polled["error"]  # short summary for the poller
+
+    fetched = (await client.get(f"/interviews/{session_id}", headers=bearer(token))).json()
     assert fetched["status"] == "in_progress"  # transcribe failure must not abandon the session
-    assert fetched["answers"][0]["transcript"] is None
-    assert fetched["answers"][0]["speech_metrics"] is None
+    row = fetched["answers"][0]
+    assert row["transcript"] is None and row["speech_metrics"] is None and row["answer_text"] is None
 
 
 async def test_transcribe_job_is_owner_only_404(client, redis_pool, monkeypatch):
-    """Another candidate polling the transcribe job id gets 404, not 403 — same as GET /jobs/{id}."""
-    _install_fake_speech(monkeypatch)
-    owner, owner_id = await _create_user_with_tokens("sp-owner@example.com", "StrongPass123", UserRole.CANDIDATE)
-    other, _ = await _create_user_with_tokens("sp-other@example.com", "StrongPass123", UserRole.CANDIDATE)
-    resume_id = await _insert_resume(owner_id)
-    session_id, answer_id = await _insert_session_with_question(owner_id, resume_id)
+    """Another candidate polling the transcribe job id gets 404, not 403, like GET /jobs/{id}."""
+    install_fake_speech(monkeypatch)
+    owner, _, session_id, answer_ids = await _candidate_with_session("sp-owner@example.com")
+    other, _ = await create_user_with_tokens("sp-other@example.com", "StrongPass123", UserRole.CANDIDATE)
 
-    uploaded = await client.post(
-        f"/interviews/{session_id}/answers/{answer_id}/audio",
-        files={"file": ("answer.webm", _tiny_webm(), "audio/webm")},
-        headers=_bearer(owner),
-    )
-    job_id = uploaded.json()["async_job_id"]
-
-    response = await client.get(f"/jobs/{job_id}", headers=_bearer(other))
+    uploaded = await speak(client, owner, session_id, answer_ids[0])
+    response = await client.get(f"/jobs/{uploaded.json()['async_job_id']}", headers=bearer(other))
     assert response.status_code == 404
     assert response.json()["detail"] == "job not found"
 
 
-async def test_audio_overwrite_reenqueues_and_clears_stale_transcript(client, redis_pool, monkeypatch):
-    """A second upload clears transcript/metrics and returns a new async_job_id."""
-    _install_fake_speech(monkeypatch)
-    token, user_id = await _create_user_with_tokens("sp-retry@example.com", "StrongPass123", UserRole.CANDIDATE)
-    resume_id = await _insert_resume(user_id)
-    session_id, answer_id = await _insert_session_with_question(user_id, resume_id)
+async def test_retake_reenqueues_and_duplicate_evaluates_write_once(client, redis_pool, monkeypatch):
+    """A retake before scoring clears old text; two concurrent evaluates still store one score and one follow-up."""
+    backend = FakeInterviewBackend(evaluation=FAKE_EVALUATION_WEAK, follow_up=FAKE_FOLLOW_UP)  # weak -> follow-up
+    install_fake(monkeypatch, backend)
+    install_fake_speech(monkeypatch)
+    token, _, session_id, answer_ids = await _candidate_with_session("sp-retry@example.com")
 
-    first = await client.post(
-        f"/interviews/{session_id}/answers/{answer_id}/audio",
-        files={"file": ("answer.webm", _tiny_webm(), "audio/webm")},
-        headers=_bearer(token),
-    )
-    first_job = first.json()["async_job_id"]
-    await run_burst_worker()  # writes hello world
-    assert (await client.get(f"/interviews/{session_id}", headers=_bearer(token))).json()["answers"][0][
-        "transcript"
-    ] == "hello world"
-
-    second = await client.post(
-        f"/interviews/{session_id}/answers/{answer_id}/audio",
-        files={"file": ("answer.webm", _tiny_webm() + b"-v2", "audio/webm")},  # different bytes so sha256 changes
-        headers=_bearer(token),
-    )
+    first = await speak(client, token, session_id, answer_ids[0])
+    second = await speak(client, token, session_id, answer_ids[0], suffix=b"-v2")  # new bytes, new sha256
     assert second.status_code == 200
-    second_job = second.json()["async_job_id"]
-    assert second_job != first_job  # a new async_jobs row, not a reuse of the first id
+    assert second.json()["async_job_id"] != first.json()["async_job_id"]  # a new async_jobs row
 
-    mid = (await client.get(f"/interviews/{session_id}", headers=_bearer(token))).json()["answers"][0]
-    assert mid["transcript"] is None  # stale Whisper text must not survive overwrite
-    assert mid["speech_metrics"] is None  # stale timings must not survive overwrite
-    assert mid["has_audio"] is True  # blob is still on disk
+    mid = (await client.get(f"/interviews/{session_id}", headers=bearer(token))).json()["answers"][0]
+    assert mid["transcript"] is None and mid["answer_text"] is None  # stale text did not survive the retake
 
-    await run_burst_worker()  # second transcribe
-    final = (await client.get(f"/interviews/{session_id}", headers=_bearer(token))).json()["answers"][0]
-    assert final["transcript"] == "hello world"  # fake pipeline is deterministic
+    await run_burst_worker()  # both transcribes see the v2 file; the second evaluate is a duplicate and is skipped
+
+    for upload in (first, second):  # neither transcribe fails
+        job = (await client.get(f"/jobs/{upload.json()['async_job_id']}", headers=bearer(token))).json()
+        assert job["status"] == "succeeded"
+    answers = (await client.get(f"/interviews/{session_id}", headers=bearer(token))).json()["answers"]
+    assert answers[0]["answer_text"] == "hello world"
+    assert answers[0]["evaluation"]["score"] == 1  # a single stored evaluation
+    # ARQ may run both evaluate jobs at once, but the write-time guard lets only one append a follow-up.
+    assert len(answers) == 3 and [row["is_follow_up"] for row in answers].count(True) == 1
+
+
+async def test_duplicate_evaluate_job_is_skipped(client, redis_pool, monkeypatch):
+    """A second evaluate for an already-scored row returns skipped and calls the judge zero more times."""
+    backend = FakeInterviewBackend()
+    install_fake(monkeypatch, backend)
+    install_fake_speech(monkeypatch)
+    token, user_id, session_id, answer_ids = await _candidate_with_session("sp-dup@example.com")
+    await speak(client, token, session_id, answer_ids[0])
+    await run_burst_worker()
+    calls_before = backend.titles_called.count("AnswerEvaluation")
+
+    from app.main import app  # app.state.redis is attached by the redis_pool fixture
+    from app.workers.job_types import JOB_TYPE_INTERVIEW_EVALUATE  # plain string
+
+    async with AsyncSessionLocal() as session:
+        dup = await enqueue_job(
+            session,
+            app.state.redis,
+            job_type=JOB_TYPE_INTERVIEW_EVALUATE,
+            user_id=user_id,
+            payload={"answer_id": str(answer_ids[0]), "session_id": str(session_id)},
+        )
+    await run_burst_worker()
+
+    polled = (await client.get(f"/jobs/{dup.id}", headers=bearer(token))).json()
+    assert polled["status"] == "succeeded"
+    assert polled["result"]["skipped"] is True and polled["result"]["reason"] == "already evaluated"
+    assert backend.titles_called.count("AnswerEvaluation") == calls_before  # no second judge call
 
 
 async def test_transcribe_skips_when_audio_path_is_null(client, redis_pool, monkeypatch):
-    """Text-only answers: transcribe succeeds as skipped and does not fail the session."""
-    _install_fake_speech(monkeypatch)  # would be a bug if the pipeline ran (no file)
-    token, user_id = await _create_user_with_tokens("sp-skip@example.com", "StrongPass123", UserRole.CANDIDATE)
-    resume_id = await _insert_resume(user_id)
-    session_id, answer_id = await _insert_session_with_question(user_id, resume_id)
+    """A row with no recording: transcribe succeeds as skipped and does not touch answer_text."""
+    install_fake_speech(monkeypatch)  # would be a bug if the pipeline ran (no file)
+    token, user_id, session_id, answer_ids = await _candidate_with_session("sp-skip@example.com")
 
     from app.main import app  # app.state.redis is attached by the redis_pool fixture
 
@@ -282,19 +195,19 @@ async def test_transcribe_skips_when_audio_path_is_null(client, redis_pool, monk
             app.state.redis,  # live ARQ pool the fixture attached
             job_type=JOB_TYPE_TRANSCRIBE,
             user_id=user_id,
-            payload={"answer_id": str(answer_id), "session_id": str(session_id)},
+            payload={"answer_id": str(answer_ids[0]), "session_id": str(session_id)},
         )
 
     await run_burst_worker()
 
-    polled = (await client.get(f"/jobs/{job.id}", headers=_bearer(token))).json()
+    polled = (await client.get(f"/jobs/{job.id}", headers=bearer(token))).json()
     assert polled["status"] == "succeeded"
     assert polled["result"]["skipped"] is True
     assert polled["result"]["reason"] == "no audio"
 
-    fetched = (await client.get(f"/interviews/{session_id}", headers=_bearer(token))).json()
-    assert fetched["answers"][0]["transcript"] is None  # nothing to write
-    assert fetched["answers"][0]["has_audio"] is False
+    async with AsyncSessionLocal() as db:
+        row = await db.get(Answer, answer_ids[0])
+        assert row.transcript is None and row.answer_text is None  # nothing to write
 
 
 def test_live_speech_pipeline_smoke() -> None:

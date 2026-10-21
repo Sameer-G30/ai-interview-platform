@@ -18,7 +18,7 @@ export function SkillGapCard({
     <Card data-testid="candidate-skill-gap">
       <CardHeader>
         <CardTitle>Skill gap</CardTitle>
-        <CardDescription>From GET /matches against your latest parsed resume. Same chips as Matches.</CardDescription>
+        <CardDescription>Skills on your latest resume compared with active job postings.</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         {noParsedResume ? (
@@ -31,7 +31,7 @@ export function SkillGapCard({
           </p>
         ) : null}
         {!noParsedResume && matches !== undefined && matches.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No active embedded postings to compare against yet.</p>
+          <p className="text-sm text-muted-foreground">No active postings to compare against yet.</p>
         ) : null}
         {!noParsedResume && matched.length > 0 ? (
           <div className="flex flex-col gap-1">

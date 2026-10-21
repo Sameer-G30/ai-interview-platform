@@ -5,6 +5,7 @@ import { ApiError } from "@/api/types" // poll / GET failures
 import { fetchResume, resumeQueryKeys } from "@/api/resumes" // GET /resumes/{id}
 import { ParseStatus } from "@/components/resume/parse-status" // queued / running / failed from useJobStatus
 import { ResumeResults } from "@/components/resume/resume-results" // ATS + skills + sections
+import { PageHeader } from "@/components/layout/page-header" // shared title block
 import { Button } from "@/components/ui/button" // back / retry links
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card" // status chrome
 import { Skeleton } from "@/components/ui/skeleton" // pending results placeholder
@@ -51,18 +52,15 @@ export function CandidateResumeResultsPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
-      <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold">Parsed resume</h1>
-        <p className="text-muted-foreground">
-          Job status comes from GET /jobs/{"{id}"}. Parsed sections, skills, and ATS score come from GET
-          /resumes/{"{id}"} after the job finishes.
-        </p>
-      </div>
+      <PageHeader
+        title="Parsed resume"
+        description="Your resume sections, extracted skills, and ATS score appear here once parsing finishes."
+      />
       <Card>
         <CardHeader>
-          <CardTitle>Parse job</CardTitle>
+          <CardTitle>Reading your resume</CardTitle>
           <CardDescription>
-            {jobId !== null ? `Polling ${jobId}` : "No job id in the URL — reading the resume row directly."}
+            {jobId !== null ? "Checking progress..." : "Showing your saved resume."}
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -73,7 +71,7 @@ export function CandidateResumeResultsPage() {
               pollError={pollError}
             />
           ) : (
-            <p className="text-sm text-muted-foreground">Skipped job polling because ?job= is missing.</p>
+            <p className="text-sm text-muted-foreground">Showing the resume already on file.</p>
           )}
         </CardContent>
       </Card>
@@ -81,7 +79,7 @@ export function CandidateResumeResultsPage() {
         <div className="flex flex-col gap-2">
           <Skeleton className="h-24 w-full" />
           <Skeleton className="h-24 w-full" />
-          <p className="text-sm text-muted-foreground">Waiting for the worker to finish…</p>
+          <p className="text-sm text-muted-foreground">Reading your resume…</p>
         </div>
       ) : null}
       {canFetchResume && resumeQuery.isPending ? (

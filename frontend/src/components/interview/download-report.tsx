@@ -27,7 +27,7 @@ export function DownloadReportButton({ sessionId, compact = false }: { sessionId
       if (caught instanceof ApiError) {
         setError(caught.detail) // FastAPI detail (score/report not found, renderer unavailable)
       } else {
-        setError("could not download the report — is the API running?") // network
+        setError("could not download the report — please try again.") // network
       }
     } finally {
       setBusy(false) // re-enable

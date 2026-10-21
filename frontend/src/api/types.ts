@@ -53,10 +53,10 @@ export type LoginRequest = {
 // Job lifecycle stored on async_jobs.status; JSON is the enum value, not the member name.
 export type AsyncJobStatus = "queued" | "running" | "succeeded" | "failed" // GET /jobs/{id} status field
 
-// Exact JSON body FastAPI returns from POST /jobs/demo and GET /jobs/{id} (`AsyncJobOut`).
+// Exact JSON body FastAPI returns from GET /jobs/{id} (`AsyncJobOut`).
 export type AsyncJobOut = {
   id: string // UUID string of the async_jobs row; poll this via GET /jobs/{id}
-  job_type: string // e.g. "demo_echo"; later resume_parse / transcribe / evaluate
+  job_type: string // resume_parse, posting_embed, interview_generate, transcribe, or interview_evaluate
   status: AsyncJobStatus // queued while waiting, running while the worker is busy, then terminal
   user_id: string | null // owner; GET returns 404 for another user's id
   payload: Record<string, unknown> | null // input the worker received
@@ -64,13 +64,6 @@ export type AsyncJobOut = {
   error: string | null // short failure summary once failed; null otherwise
   created_at: string // ISO timestamp of row insert
   updated_at: string // ISO timestamp of last status write
-}
-
-// Body for POST /jobs/demo; all fields optional because the backend supplies defaults.
-export type DemoJobRequest = {
-  message?: string // echoed in result.echo on success
-  sleep_ms?: number // 0–5000; SPA demo uses a short delay so queued/running is visible
-  fail?: boolean // tests only; the SPA demo never sends true
 }
 
 // Lifecycle stored on resumes.status; JSON is the enum value, not the member name.
@@ -269,23 +262,12 @@ export type InterviewStartOut = {
   status: InterviewSessionStatus // "scheduled" at this point; the worker advances it to in_progress
 }
 
-// Body for POST /interviews/{session_id}/answers/{answer_id}. Text only; audio is a separate upload.
-export type AnswerSubmitRequest = {
-  answer_text: string // min_length 1 on the API; empty is 422
-}
-
-// Exact JSON body FastAPI returns from text submit (`AnswerSubmitOut`).
-export type AnswerSubmitOut = {
-  answer_id: string // the row whose evaluation the client will read after polling
-  async_job_id: string // poll via GET /jobs/{id}; same useJobStatus hook as generate
-  session_status: InterviewSessionStatus // still in_progress until the worker completes the session
-}
-
-// Exact JSON body FastAPI returns from POST .../audio (`AudioUploadOut`).
+// Exact JSON body FastAPI returns from POST .../audio (`AudioUploadOut`). Answers are spoken: this is the only
+// way to answer (typed submit returns 410).
 export type AudioUploadOut = {
   answer_id: string // the row whose audio_path was written
   has_audio: boolean // always true on success
-  async_job_id: string // poll transcribe via GET /jobs/{id}; same useJobStatus hook as generate
+  async_job_id: string // poll transcribe via GET /jobs/{id}; its result carries evaluate_async_job_id
 }
 
 // One stored Score row from GET /scores/{session_id} (`ScoreOut`). Null signals were omitted, not faked as 0.

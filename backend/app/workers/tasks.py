@@ -13,7 +13,13 @@ import uuid  # resume_id / job_id / session_id in the job payload are UUID strin
 from datetime import UTC, datetime  # started_at / completed_at written by the interview workers
 from pathlib import Path  # transcribe checks that answers.audio_path still exists on disk
 
-from ml.interview import build_followup_messages, build_generate_messages, rubric_name_for_kind, should_follow_up
+from ml.interview import (
+    build_followup_messages,
+    build_generate_messages,
+    build_topup_messages,
+    rubric_name_for_kind,
+    should_follow_up,
+)
 from ml.llm import (  # Phase 8 provider; constructed inside the handler, never at this module's import time
     AnswerEvaluation,
     GeneratedQuestions,
@@ -27,7 +33,8 @@ from ml.matching.embed import embed_text  # lazy-loaded SBERT singleton, used fo
 from ml.resume import ResumeParseError, run_resume_pipeline  # PyMuPDF/pypdfium2 + spaCy + ESCO + ATS, one call
 from ml.scoring import (  # Phase 13 arithmetic aggregator; never calls Ollama/Whisper
     AnswerSignals,  # per-answer evaluation + speech_metrics for aggregate_session
-    ScoringConfigError,  # invalid/un-renormalizable weights; evaluate still commits
+    IncompleteSignalsError,  # one of the four signals is unmeasured: session stays open
+    ScoringConfigError,  # invalid weights; evaluate still commits and the session stays open
     aggregate_session,  # writes reconstructable attribution; no GPU
 )
 from ml.scoring import (
@@ -51,6 +58,8 @@ from app.models.interview_session import InterviewSession  # row generate/evalua
 from app.models.job import Job  # row posting_embed loads and writes embedding onto; interview reads title/skills
 from app.models.resume import Resume  # row this task advances through its lifecycle
 from app.models.score import Score  # one composite row per completed session (unique session_id)
+from app.workers.enqueue import enqueue_job  # transcribe chains straight into interview_evaluate
+from app.workers.job_types import JOB_TYPE_INTERVIEW_EVALUATE  # plain string job type
 from app.workers.tracked import run_tracked_job  # shared running/succeeded/failed status wrapper
 
 logger = logging.getLogger(__name__)  # module logger, mirrors app.workers.tracked's convention
@@ -188,13 +197,22 @@ def _build_interview_provider() -> LLMProvider:
     return get_provider(config_from_settings(get_settings()))  # still lazy: no HTTP until complete_json
 
 
+class QuestionKindError(RuntimeError):
+    """The model could not produce both a technical and a behavioral question, even after one top-up."""
+
+
 def _generate_questions_sync(
     resume_skills: list[str],
     posting_title: str | None,
     posting_description: str | None,
     posting_required_skills: str | None,
 ) -> GeneratedQuestions:
-    """Sync complete_json call; the async worker wraps this in asyncio.to_thread."""
+    """Sync complete_json call; the async worker wraps this in asyncio.to_thread.
+
+    Guarantees at least one technical and one behavioral question: if the first reply lacks a kind,
+    one top-up call asks for exactly that kind. A top-up of the wrong kind raises QuestionKindError
+    (no silent relabel), which abandons the session.
+    """
     provider = _build_interview_provider()  # looked up at call time so tests can monkeypatch it
     try:
         messages = build_generate_messages(
@@ -203,7 +221,26 @@ def _generate_questions_sync(
             posting_description=posting_description,
             posting_required_skills=posting_required_skills,
         )
-        return provider.complete_json(messages, GeneratedQuestions)  # LLMJSON/Schema/ProviderError propagate
+        generated = provider.complete_json(messages, GeneratedQuestions)  # LLMJSON/Schema/ProviderError propagate
+        kinds = {item.question_kind for item in generated.questions}  # which kinds the model produced
+        for missing_kind in ("technical", "behavioral"):
+            if missing_kind in kinds:
+                continue  # already covered
+            extra = provider.complete_json(
+                build_topup_messages(
+                    missing_kind=missing_kind,
+                    existing_questions=[item.question_text for item in generated.questions],
+                    resume_skills=resume_skills,
+                    posting_title=posting_title,
+                    posting_required_skills=posting_required_skills,
+                ),
+                InterviewQuestion,
+            )
+            if extra.question_kind != missing_kind:
+                raise QuestionKindError(f"top-up returned {extra.question_kind!r} instead of {missing_kind!r}")
+            generated = GeneratedQuestions(questions=[*generated.questions, extra][:6])  # schema caps at 6
+            kinds.add(missing_kind)
+        return generated
     finally:
         provider.close()  # drop the owned httpx client even when complete_json raises
 
@@ -239,13 +276,18 @@ def _evaluate_and_maybe_followup_sync(
         provider.close()  # unload keep_alive=0 still happens per backend call; close the HTTP client here
 
 
-async def _upsert_completed_score(db: AsyncSession, interview: InterviewSession) -> dict | None:
-    """Write/overwrite the Score row for a session that just flipped to completed.
+def _row_is_fully_answered(row: Answer) -> bool:
+    """A row counts toward completion only with audio, speech metrics, a transcript copy, and an evaluation."""
+    return bool(row.audio_path) and row.speech_metrics is not None and bool(row.answer_text) and (
+        row.evaluation is not None
+    )
 
-    Same-pass as follow-up / resume embedding: when GET /jobs/{id} for evaluate is succeeded and
-    the session is completed, GET /scores/{id} already has the composite. Abandoned sessions never
-    call this. Arithmetic only — no Whisper, no judge. Returns a small dict for async_jobs.result,
-    or None if weights/signals could not renormalize (session still completes).
+
+async def _upsert_completed_score(db: AsyncSession, interview: InterviewSession) -> dict:
+    """Aggregate all four signals and write/overwrite the Score row for a session about to complete.
+
+    Arithmetic only (no Whisper, no judge). Raises IncompleteSignalsError / ScoringConfigError
+    before any Score mutation so the caller can leave the session in_progress.
     """
     resume = await db.get(Resume, interview.resume_id)  # ATS lives on the resume, not the session
     answer_rows = (
@@ -254,21 +296,17 @@ async def _upsert_completed_score(db: AsyncSession, interview: InterviewSession)
     signals = [
         AnswerSignals(
             question_kind=row.question_kind,  # technical | behavioral; follow-ups keep their kind
-            evaluation=row.evaluation,  # may be null if an earlier evaluate failed
-            speech_metrics=row.speech_metrics,  # null on text-only; do not invent fluency
+            evaluation=row.evaluation,  # judge JSON
+            speech_metrics=row.speech_metrics,  # dual fluency
         )
         for row in answer_rows
     ]
     weights = scoring_config_from_settings(get_settings())  # SCORE_WEIGHT_* from Settings, not os.environ
-    try:
-        result = aggregate_session(
-            weights,
-            ats_score=resume.ats_score if resume is not None else None,  # omit resume if ATS is missing
-            answers=signals,  # already-loaded JSON; no ML
-        )
-    except ScoringConfigError:
-        logger.warning("session %s completed but scoring weights/signals could not renormalize", interview.id)
-        return None  # do not fail evaluate; the session is still completed
+    result = aggregate_session(
+        weights,
+        ats_score=resume.ats_score if resume is not None else None,  # None -> IncompleteSignalsError(resume)
+        answers=signals,  # already-loaded JSON; no ML
+    )
     existing = await db.scalar(select(Score).where(Score.session_id == interview.id))  # unique session_id
     values = result.column_values()  # Score columns minus session_id
     if existing is None:
@@ -278,8 +316,7 @@ async def _upsert_completed_score(db: AsyncSession, interview: InterviewSession)
             setattr(existing, column, value)  # evaluate ran again; overwrite in place
     return {
         "composite_score": result.composite_score,  # handy on GET /jobs/{id} without a second round-trip
-        "omitted": list(result.omitted),  # e.g. ["communication"] on text-only
-        "formula_version": result.attribution.get("formula_version"),  # scoring_v1
+        "formula_version": result.attribution.get("formula_version"),  # scoring_v2
     }
 
 
@@ -355,12 +392,15 @@ async def interview_generate(ctx: dict) -> dict:
 
 
 async def interview_evaluate(ctx: dict) -> dict:
-    """Score one submitted text answer and maybe append a follow-up question in the same pass.
+    """Score one transcribed spoken answer and maybe append a follow-up question in the same pass.
 
-    Follow-up rule: `should_follow_up` is True when score <= 2 and the question is not already a
-    follow-up. The follow-up is generated here (not in the request handler) via complete_json.
-    When every current question has answer_text and no follow-up was appended, the session becomes
-    completed. LLM errors fail the async job; they do not clamp scores or store prose.
+    The judge reads `answer_text` (the transcript copied there by `transcribe`). Follow-up rule:
+    `should_follow_up` is True when score <= 2 and the question is not already a follow-up; the
+    follow-up is appended at the end. The write is skipped (`skipped: true`) when the row already has
+    an evaluation (duplicate job) or its `answer_text` changed while the judge ran (re-take).
+    A session completes only when every row has audio, speech metrics, answer_text, and an
+    evaluation, and `aggregate_session` can measure all four signals. If it cannot, the evaluation is
+    still committed, the session stays in_progress, and this job fails with the missing signals.
     """
 
     async def _handle(payload: dict | None) -> dict:
@@ -371,12 +411,15 @@ async def interview_evaluate(ctx: dict) -> dict:
             if answer is None:
                 raise RuntimeError(f"answer {answer_id} was not found")
             if answer.answer_text is None:
-                raise RuntimeError(f"answer {answer_id} has no answer_text")  # submit must commit first
+                raise RuntimeError(f"answer {answer_id} has no answer_text")  # transcribe must commit first
+            session_id = answer.session_id
+            if answer.evaluation is not None:
+                return {"answer_id": str(answer_id), "session_id": str(session_id), "skipped": True,
+                        "reason": "already evaluated"}  # duplicate job: do not call the judge again
             question_text = answer.question_text
-            answer_text = answer.answer_text
+            answer_text = answer.answer_text  # snapshot compared again before writing
             question_kind = answer.question_kind
             is_follow_up = answer.is_follow_up
-            session_id = answer.session_id
         evaluation, follow_up = await asyncio.to_thread(
             _evaluate_and_maybe_followup_sync,
             question_text,
@@ -384,11 +427,16 @@ async def interview_evaluate(ctx: dict) -> dict:
             question_kind,
             is_follow_up,
         )
+        incomplete: Exception | None = None  # raised after the evaluation is committed
         async with AsyncSessionLocal() as session:
-            answer = await session.get(Answer, answer_id)
+            answer = await session.get(Answer, answer_id, with_for_update=True)  # serialize duplicate evaluates
             interview = await session.get(InterviewSession, session_id)
             if answer is None or interview is None:
                 raise RuntimeError(f"answer {answer_id} or session {session_id} disappeared")
+            if answer.evaluation is not None or answer.answer_text != answer_text:
+                reason = "already evaluated" if answer.evaluation is not None else "answer replaced"
+                return {"answer_id": str(answer_id), "session_id": str(session_id), "skipped": True,
+                        "reason": reason}  # stale text must not write a score or a second follow-up
             answer.evaluation = evaluation.model_dump()  # {score, rationale, strengths, improvements}
             follow_up_appended = False  # stays False unless we insert a new answers row below
             score_payload: dict | None = None  # set only when this pass completes the session
@@ -408,17 +456,23 @@ async def interview_evaluate(ctx: dict) -> dict:
                 )
                 follow_up_appended = True
             if not follow_up_appended:
-                unanswered = await session.scalar(
-                    select(func.count())
-                    .select_from(Answer)
-                    .where(Answer.session_id == session_id, Answer.answer_text.is_(None))
-                )
-                if int(unanswered or 0) == 0:  # every current question has text; no new follow-up
-                    interview.status = InterviewSessionStatus.COMPLETED
-                    interview.completed_at = datetime.now(UTC)
-                    score_payload = await _upsert_completed_score(session, interview)  # same commit; not a third job
+                await session.flush()  # make this row's evaluation visible to the completion query
+                rows = (
+                    await session.execute(select(Answer).where(Answer.session_id == session_id))
+                ).scalars().all()
+                if all(_row_is_fully_answered(row) for row in rows):  # audio + metrics + text + evaluation, every row
+                    try:
+                        score_payload = await _upsert_completed_score(session, interview)  # raises before writing
+                    except (IncompleteSignalsError, ScoringConfigError) as exc:
+                        incomplete = exc  # keep the evaluation, leave the session open
+                    else:
+                        interview.status = InterviewSessionStatus.COMPLETED
+                        interview.completed_at = datetime.now(UTC)
             session_status = interview.status.value  # copy before commit; expire_on_commit would lazy-load
             await session.commit()
+        if incomplete is not None:
+            logger.warning("session %s has all answers but cannot be scored: %s", session_id, incomplete)
+            raise incomplete  # run_tracked_job records the short missing-signal message
         result_body = {
             "session_id": str(session_id),
             "answer_id": str(answer_id),
@@ -428,7 +482,6 @@ async def interview_evaluate(ctx: dict) -> dict:
         }
         if score_payload is not None:
             result_body["composite_score"] = score_payload["composite_score"]  # present only when we wrote a Score
-            result_body["omitted_signals"] = score_payload["omitted"]  # text-only omits communication
         return result_body
 
     return await run_tracked_job(ctx, _handle)
@@ -454,10 +507,11 @@ def _run_speech_pipeline(audio_path: str) -> SpeechPipelineResult:
 
 
 async def transcribe(ctx: dict) -> dict:
-    """Transcribe one answer's WebM blob and persist transcript + speech_metrics.
+    """Transcribe one answer's WebM blob, persist transcript + speech_metrics, and copy it into answer_text.
 
-    No-op success when `audio_path` is null (text-only answers). Does not call the LLM and does
-    not complete/abandon the session. A retry overwrite of the same webm re-enqueues this type;
+    A non-empty transcript enqueues `interview_evaluate` (returned as `evaluate_async_job_id`); an
+    empty one does not. No-op success when `audio_path` is null. Does not call the LLM itself.
+    A retry overwrite of the same webm re-enqueues this type;
     if the file hash changed while we ran, we skip the write so stale metrics cannot clobber the
     new take. Typed `SpeechError`s fail the async job with a short message.
     """
@@ -508,15 +562,35 @@ async def transcribe(ctx: dict) -> dict:
                     "skipped": True,  # a newer upload replaced the webm; that job will write
                     "reason": "audio replaced",
                 }
+            transcript_text = result.transcript.strip()  # what the judge will read
             answer.transcript = result.transcript  # plain text; empty string is still a successful ASR
             answer.speech_metrics = result.to_metrics_dict()  # words + dual fluency + VAD + prosody
+            answer.answer_text = transcript_text or None  # the transcript IS the answer; empty stays unanswered
+            interview = await session.get(InterviewSession, answer.session_id)
+            owner_id = interview.user_id if interview is not None else None  # the candidate who recorded
             await session.commit()
-        return {
+            evaluate_job_id: str | None = None  # set only when an evaluate job is queued
+            if transcript_text:
+                evaluate_job = await enqueue_job(
+                    session,
+                    ctx["redis"],  # the worker's own ARQ pool
+                    job_type=JOB_TYPE_INTERVIEW_EVALUATE,
+                    user_id=owner_id,
+                    payload={"answer_id": str(answer_id), "session_id": str(session_id)},
+                )
+                evaluate_job_id = str(evaluate_job.id)
+        body_out: dict = {
             "answer_id": str(answer_id),
             "session_id": str(session_id),
             "skipped": False,  # worker wrote transcript + metrics
             "word_count": len(result.asr.words),  # handy for GET /jobs/{id} without opening the session
             "transcript_chars": len(result.transcript),  # 0 means Whisper heard nothing; still succeeded
+            "evaluate_enqueued": evaluate_job_id is not None,
         }
+        if evaluate_job_id is not None:
+            body_out["evaluate_async_job_id"] = evaluate_job_id  # the SPA polls this next
+        else:
+            body_out["reason"] = "empty transcript"  # candidate should record again
+        return body_out
 
     return await run_tracked_job(ctx, _handle)

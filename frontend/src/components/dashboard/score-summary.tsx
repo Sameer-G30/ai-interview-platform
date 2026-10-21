@@ -12,13 +12,13 @@ export function ScoreSummaryCard({
   score: ScoreOut // GET /scores/{id}; never recomputed in the browser
   sessionPath: string // /candidate/interview/{id}
 }) {
-  const omitted = score.attribution?.omitted ?? [] // scoring_v1 omitted names
+  const omitted = score.attribution?.omitted ?? [] // only legacy scoring_v1 rows have this; scoring_v2 never omits
   return (
     <Card data-testid="candidate-score-summary">
       <CardHeader>
         <CardTitle>Score summary</CardTitle>
         <CardDescription>
-          Stored composite after renormalize (coding dropped). Missing signals are omitted, not zero.
+          Every completed session scores four signals: resume, technical, communication, and behavioral.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
@@ -36,7 +36,8 @@ export function ScoreSummaryCard({
         </dl>
         {omitted.length > 0 ? (
           <p className="text-sm text-muted-foreground">
-            Omitted this session: {omitted.join(", ")}. Communication stays “Not recorded” on text-only interviews.
+            This is an older session scored before spoken answers were required, so {omitted.join(", ")} shows “Not
+            recorded”.
           </p>
         ) : null}
         <Link className="text-sm font-medium underline underline-offset-4" to={sessionPath}>

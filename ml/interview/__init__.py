@@ -10,6 +10,7 @@ from ml.interview.prompts import (  # message lists handed to LLMProvider.comple
     DEFAULT_QUESTION_COUNT,
     build_followup_messages,
     build_generate_messages,
+    build_topup_messages,
     rubric_name_for_kind,
 )
 
@@ -18,6 +19,7 @@ __all__ = [  # public surface the worker imports from `ml.interview`
     "FOLLOW_UP_SCORE_MAX",  # inclusive score ceiling that warrants one follow-up
     "build_followup_messages",  # complete_json messages for a single follow-up question
     "build_generate_messages",  # complete_json messages for the initial question list
+    "build_topup_messages",  # one extra question of a missing kind
     "rubric_name_for_kind",  # technical -> technical_answer, behavioral -> behavioral_answer
     "should_follow_up",  # deterministic follow-up predicate
 ]

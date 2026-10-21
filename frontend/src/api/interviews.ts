@@ -2,7 +2,6 @@
 
 import { apiFetch, apiUpload } from "@/api/client" // JSON POST/GET plus multipart audio via XHR
 import type {
-  AnswerSubmitOut,
   AudioUploadOut,
   InterviewSessionListItemOut,
   InterviewSessionOut,
@@ -39,16 +38,8 @@ export async function fetchInterview(sessionId: string): Promise<InterviewSessio
   })
 }
 
-// POST /interviews/{session_id}/answers/{answer_id} — stores text and enqueues interview_evaluate.
-export async function submitAnswer(sessionId: string, answerId: string, answerText: string): Promise<AnswerSubmitOut> {
-  return apiFetch<AnswerSubmitOut>(`/interviews/${sessionId}/answers/${answerId}`, {
-    method: "POST", // FastAPI text submit is POST
-    body: { answer_text: answerText }, // snake_case matches AnswerSubmitIn; min_length 1
-    auth: true, // candidate-only; recruiter is 403
-  })
-}
-
-// POST /interviews/{session_id}/answers/{answer_id}/audio — multipart field `file`; enqueues transcribe, not evaluate.
+// POST /interviews/{session_id}/answers/{answer_id}/audio — multipart field `file`. This is the only way to
+// answer: the transcribe worker copies the transcript into answer_text and enqueues the judge itself.
 export async function uploadAnswerAudio(
   sessionId: string, // parent session UUID
   answerId: string, // answers row UUID

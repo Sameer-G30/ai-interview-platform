@@ -6,6 +6,7 @@ import { interviewSessionPath, startInterview } from "@/api/interviews" // start
 import { fetchMatches, matchQueryKeys } from "@/api/matches" // typed /matches client
 import { ApiError } from "@/api/types" // status-based branching (404 = no parsed resume yet)
 import type { MatchOut } from "@/api/types" // one ranked posting
+import { PageHeader } from "@/components/layout/page-header" // shared title block
 import { Button } from "@/components/ui/button" // link to the resume upload page + start interview
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card" // page chrome
 import { Skeleton } from "@/components/ui/skeleton" // loading placeholder
@@ -46,7 +47,7 @@ function MatchCard({ match, resumeId }: { match: MatchOut; resumeId: string }) {
         setError(caught.detail) // 409 inactive, 404 posting, 429
         return // stay on Matches
       }
-      setError("could not start an interview — is the API running?") // network
+      setError("could not start an interview — please try again.") // network
     },
   })
 
@@ -110,17 +111,15 @@ export function CandidateMatchesPage() {
     matchesQuery.isError && !noParsedResume
       ? matchesQuery.error instanceof ApiError
         ? matchesQuery.error.detail
-        : "could not load matches — is the API running?"
+        : "could not load matches — please try again."
       : null
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
-      <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold">Matches</h1>
-        <p className="text-muted-foreground">
-          Ranked by SBERT similarity between your latest parsed resume and every active job posting.
-        </p>
-      </div>
+      <PageHeader
+        title="Matches"
+        description="Active job postings ranked by how closely they match your latest resume."
+      />
       {matchesQuery.isPending ? (
         <div className="flex flex-col gap-3">
           <Skeleton className="h-28 w-full" />

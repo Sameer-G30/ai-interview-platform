@@ -4,6 +4,7 @@ import { Link, useNavigate } from "react-router-dom" // resume CTA; session URL 
 
 import { interviewSessionPath, startInterview } from "@/api/interviews" // practice start with {}
 import { ApiError } from "@/api/types" // 404 no parsed resume / 409 not-yet-parsed
+import { PageHeader } from "@/components/layout/page-header" // shared title block
 import { Button } from "@/components/ui/button" // start + resume link; do not restyle the primitive
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card" // page chrome
 
@@ -34,24 +35,21 @@ export function CandidateInterviewStartPage() {
         setError(caught.detail) // inactive posting / 429 / 503
         return // stay on this page
       }
-      setError("could not start an interview — is the API running?") // network
+      setError("could not start an interview — please try again.") // network
     },
   })
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
-      <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold">Interview</h1>
-        <p className="text-muted-foreground">
-          Start a practice interview from your latest parsed resume, or open Matches and start one against a posting.
-          Recruiters do not have this screen.
-        </p>
-      </div>
+      <PageHeader
+        title="Interview"
+        description="Start a practice interview from your latest resume, or open Matches and interview for a specific posting. You answer every question aloud."
+      />
       <Card>
         <CardHeader>
           <CardTitle>Practice interview</CardTitle>
           <CardDescription>
-            POST /interviews with an empty body. Question generation runs on the ARQ worker — this page only enqueues.
+            Questions are written from your latest resume. You answer each one aloud.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">

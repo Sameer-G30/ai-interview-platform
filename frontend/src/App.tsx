@@ -13,7 +13,7 @@ export default function App() {
   const [queryClient] = useState(createQueryClient) // one client for the life of the tab
 
   return (
-    <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+    <ThemeProvider attribute="class" defaultTheme="light" enableSystem={false} disableTransitionOnChange>
       <QueryClientProvider client={queryClient}>
         <TooltipProvider>
           <AuthProvider>

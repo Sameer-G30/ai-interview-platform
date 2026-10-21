@@ -81,20 +81,6 @@ class InterviewSessionOut(BaseModel):
     updated_at: datetime
 
 
-class AnswerSubmitIn(BaseModel):
-    """Body for `POST /interviews/{session_id}/answers/{answer_id}`. Text only; audio is Phase 10+."""
-
-    answer_text: str = Field(min_length=1)  # empty -> 422; whitespace-only is stored and scored 0
-
-
-class AnswerSubmitOut(BaseModel):
-    """Returned immediately by answer submit, before evaluation has run."""
-
-    answer_id: uuid.UUID  # the row whose evaluation the client will read after polling
-    async_job_id: uuid.UUID  # poll via GET /jobs/{id}; same useJobStatus hook as resume/parse
-    session_status: InterviewSessionStatus  # still in_progress until the worker completes the session
-
-
 class AudioUploadOut(BaseModel):
     """Returned by `POST /interviews/{session_id}/answers/{answer_id}/audio` after the blob is on disk."""
 

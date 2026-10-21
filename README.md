@@ -1192,11 +1192,39 @@ Every push/PR runs `.github/workflows/ci.yml`:
 
 
 
+## Spoken answers and the four-signal score
+
+Answers are spoken. The candidate records audio; there is no text box.
+
+1. `POST /interviews/{id}/answers/{id}/audio` stores the WebM and queues `transcribe` (409 once the answer is scored or the session is closed; a retake clears the old transcript).
+2. `transcribe` writes `transcript`, `speech_metrics`, and `answer_text` (the transcript), then queues `interview_evaluate`. An empty transcript is not evaluated; the candidate records again.
+3. `interview_evaluate` judges `answer_text` by question kind and may append one follow-up at the end of the list (score 2 or lower). A stale or duplicate evaluate is skipped.
+4. A session completes only when every row has audio, speech metrics, a transcript copy, and an evaluation, and `scoring_v2` can measure all four signals. Otherwise the evaluation is kept, the session stays open, and the job fails naming the missing signal.
+
+`scoring_v2` requires resume, technical, communication, and behavioral. Nothing is omitted, null, or renormalized away: the default weights are 20/90, 30/90, 25/90, and 15/90 (set `SCORE_WEIGHT_*` to change them). Older `scoring_v1` rows stay readable and show "Not recorded" for the signals they lacked. `POST .../answers/{id}` (typed text) now returns 410. Question generation guarantees at least one technical and one behavioral question, with one top-up call if the model misses a kind.
+
+## Running the tests without touching dev data
+
+pytest deletes every domain row after each test and flushes Redis, so never point it at the dev database. Use a separate database and Redis db:
+
+```bash
+# one-time: create and migrate the test database inside the running Postgres container
+docker compose exec db psql -U aiip_user -d aiip_db -c "CREATE DATABASE aiip_test"
+DATABASE_URL=postgresql+asyncpg://aiip_user:<password>@localhost:5432/aiip_test uv run alembic upgrade head
+
+# every run
+DATABASE_URL=postgresql+asyncpg://aiip_user:<password>@localhost:5432/aiip_test \
+REDIS_URL=redis://localhost:6379/1 uv run pytest -q
+```
+
+`alembic check` and the demo seed run against the dev database (`aiip_db`) as before.
+
 ## Resuming from a clean shell
 
 ```bash
 cd "/home/sam/projects/Project-2 MLIS/ai-interview-platform" && \
-  uv sync && docker compose up -d && uv run alembic upgrade head && uv run pytest -q
+  uv sync && docker compose up -d && uv run alembic upgrade head
+# then run the tests against the isolated database described above
 ```
 
 Worker (separate process, repo root): `uv run arq app.workers.settings.WorkerSettings`. SPA: `cd frontend && npm install && npm test && npm run dev` (leave `VITE_API_BASE_URL` empty so `/auth`, `/health`, `/jobs`, `/resumes`, `/postings`, `/matches`, `/interviews`, `/scores`, `/reports`, and `/admin` stay same-origin via the Vite proxy). Demo accounts: `uv run python scripts/seed_demo.py` (does not wipe Postgres). Container API+worker, optional: `docker compose --profile deploy up -d --build` (host port 8002; host uvicorn stays on 8001).

@@ -7,6 +7,7 @@ precomputed pgvector embeddings; the TF-IDF baseline lives in `ml/matching` behi
 interface but is not exposed here (covered by its own unit test instead, per the plan).
 """
 
+import asyncio  # to_thread for the CPU-bound skill-gap loop
 import uuid  # optional ?resume_id= query param
 
 from fastapi import APIRouter, Depends, Query  # routing / DI; 404/409 come from resolve_parsed_resume
@@ -55,19 +56,21 @@ async def list_matches(
         postings=match_inputs,
     )
 
-    ranked: list[MatchOut] = []
-    for posting, score in zip(postings, scores, strict=True):
-        required_skills = extract_skills(posting.required_skills or "")
-        matched, missing = skill_gap(resume_skills, required_skills)
-        ranked.append(
-            MatchOut(
-                posting_id=posting.id,
-                title=posting.title,
-                score=score,
-                matched_skills=matched,
-                missing_skills=missing,
-            )
+    def _skill_gaps() -> list[tuple[list[str], list[str]]]:
+        """Matcher work for every posting in one thread hop; the compiled matcher is cached."""
+        return [skill_gap(resume_skills, extract_skills(posting.required_skills or "")) for posting in postings]
+
+    gaps = await asyncio.to_thread(_skill_gaps)  # one hop instead of blocking the loop per posting
+    ranked: list[MatchOut] = [
+        MatchOut(
+            posting_id=posting.id,
+            title=posting.title,
+            score=score,
+            matched_skills=matched,
+            missing_skills=missing,
         )
+        for posting, score, (matched, missing) in zip(postings, scores, gaps, strict=True)
+    ]
     ranked.sort(key=lambda match: match.score, reverse=True)  # best match first
 
     return MatchListOut(resume_id=resume.id, matches=ranked)

@@ -16,6 +16,8 @@ from interview_fakes import (  # Phase 13 fakes; do not load MiniLM or hit Ollam
     bearer,
     create_user_with_tokens,
     install_fake,
+    install_fake_speech,
+    speak,
 )
 
 from app.core.db import AsyncSessionLocal  # same session factory the app uses
@@ -163,25 +165,19 @@ async def test_list_own_sessions_newest_first_practice_vs_posting(client, redis_
 
 async def test_list_includes_score_written_by_evaluate(client, redis_pool, monkeypatch):
     """A session completed through the fake evaluate worker appears on GET /interviews with composite."""
-    backend = FakeInterviewBackend(
-        questions=[{"question_text": "What is a Python list?", "question_kind": "technical"}],  # one Q
-        evaluation=FAKE_EVALUATION_OK,  # score 4 → no follow-up → completed
-    )
-    install_fake(monkeypatch, backend)  # never hit Ollama
+    install_fake(monkeypatch, FakeInterviewBackend(evaluation=FAKE_EVALUATION_OK))  # technical + behavioral, score 4
+    install_fake_speech(monkeypatch)  # fake transcript + fluency; no Whisper
     token, user_id = await create_user_with_tokens("list-eval@example.com", "StrongPass123", UserRole.CANDIDATE)
     resume_id = await _insert_resume(user_id)  # parsed
     created = await client.post("/interviews", json={"resume_id": str(resume_id)}, headers=bearer(token))
     assert created.status_code == 201, created.text  # start
     session_id = created.json()["session_id"]  # list target
     await run_burst_worker()  # generate
-    answer_id = (await client.get(f"/interviews/{session_id}", headers=bearer(token))).json()["answers"][0]["id"]
-    submitted = await client.post(
-        f"/interviews/{session_id}/answers/{answer_id}",
-        json={"answer_text": "A mutable ordered sequence of objects."},  # min_length 1
-        headers=bearer(token),
-    )
-    assert submitted.status_code == 200, submitted.text  # enqueue evaluate
-    await run_burst_worker()  # evaluate + Score upsert
+    answers = (await client.get(f"/interviews/{session_id}", headers=bearer(token))).json()["answers"]
+    for answer in answers:  # every answer is spoken
+        uploaded = await speak(client, token, session_id, answer["id"])
+        assert uploaded.status_code == 200, uploaded.text  # enqueue transcribe
+        await run_burst_worker()  # transcribe -> evaluate (+ Score upsert on the last row)
     listed = await client.get("/interviews", headers=bearer(token))  # collection
     assert listed.status_code == 200, listed.text  # ok
     rows = listed.json()  # one session

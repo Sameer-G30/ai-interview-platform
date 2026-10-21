@@ -54,7 +54,7 @@ export function ScoreDistributionChart({ rows }: { rows: RankingRowOut[] }) {
       <CardHeader>
         <CardTitle>Score distribution</CardTitle>
         <CardDescription>
-          Stored composites and signals from GET /scores/rankings. Omitted communication is not drawn as 0.
+          Stored scores for candidates who finished an interview for this posting.
         </CardDescription>
       </CardHeader>
       <CardContent>

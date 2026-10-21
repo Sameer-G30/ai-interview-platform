@@ -37,7 +37,7 @@ export function AdminSessionsPage() {
     sessionsQuery.error instanceof ApiError
       ? sessionsQuery.error.detail
       : sessionsQuery.isError
-        ? "could not load sessions — is the API running?"
+        ? "could not load sessions — please try again."
         : null
 
   return (
@@ -45,8 +45,8 @@ export function AdminSessionsPage() {
       <CardHeader>
         <CardTitle>Sessions</CardTitle>
         <CardDescription>
-          Ops listing across candidates. Practice (no posting) is included here; recruiter ranking still omits it.
-          Composites are stored values — this page does not recompute.
+          Every interview, including practice sessions. Recruiter rankings leave practice out. Scores shown here are
+          the ones stored when the interview finished.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">

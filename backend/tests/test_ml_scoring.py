@@ -1,6 +1,6 @@
 """Unit tests for `ml.scoring`. No MiniLM, Whisper, Ollama, or WeasyPrint.
 
-Covers weight renormalization, missing-signal omission (not faked as 0), attribution summing to
+Covers four-signal weight normalization, IncompleteSignalsError (never omitted or faked as 0), attribution summing to
 the composite, judge 0–5 → 0–100 scale, and equal-mean dual-fluency mapping (not a winner arm).
 """
 
@@ -12,6 +12,7 @@ from ml.scoring import (  # public surface
     SIGNAL_RESUME,
     SIGNAL_TECHNICAL,
     AnswerSignals,
+    IncompleteSignalsError,
     ScoringConfigError,
     ScoringWeights,
     aggregate_session,
@@ -60,9 +61,17 @@ def test_scale_judge_score_zero_five_and_mid() -> None:
     assert scale_judge_score(2.5) == 50.0  # midpoint
 
 
-def test_default_weights_renormalize_to_one() -> None:
-    """Brief 20/30/25/15 (coding dropped) renormalize across all four signals to sum 1.0."""
-    applied = ScoringWeights().applied({SIGNAL_RESUME, SIGNAL_TECHNICAL, SIGNAL_COMMUNICATION, SIGNAL_BEHAVIORAL})
+def _full_answers(*, technical: int = 4, behavioral: int = 5) -> list[AnswerSignals]:
+    """One spoken technical and one spoken behavioral answer with both fluency arms."""
+    return [
+        AnswerSignals(question_kind="technical", evaluation={"score": technical}, speech_metrics=_metrics()),
+        AnswerSignals(question_kind="behavioral", evaluation={"score": behavioral}, speech_metrics=_metrics()),
+    ]
+
+
+def test_applied_weights_are_over_all_four_signals() -> None:
+    """Brief 20/30/25/15 normalize over all four: 20/90, 30/90, 25/90, 15/90."""
+    applied = ScoringWeights().applied()
     assert applied[SIGNAL_RESUME] == pytest.approx(20.0 / 90.0)  # 20/90
     assert applied[SIGNAL_TECHNICAL] == pytest.approx(30.0 / 90.0)  # 30/90
     assert applied[SIGNAL_COMMUNICATION] == pytest.approx(25.0 / 90.0)  # 25/90
@@ -70,75 +79,98 @@ def test_default_weights_renormalize_to_one() -> None:
     assert sum(applied.values()) == pytest.approx(1.0)  # guaranteed
 
 
-def test_missing_communication_renormalizes_remaining() -> None:
-    """Text-only sessions omit communication; remaining weights still sum to 1.0."""
-    applied = ScoringWeights().applied({SIGNAL_RESUME, SIGNAL_TECHNICAL, SIGNAL_BEHAVIORAL})  # no speech
-    assert SIGNAL_COMMUNICATION not in applied  # omitted, not weight 0 with value 0
-    assert applied[SIGNAL_RESUME] == pytest.approx(20.0 / 65.0)  # 20+30+15=65
-    assert applied[SIGNAL_TECHNICAL] == pytest.approx(30.0 / 65.0)  # technical
-    assert applied[SIGNAL_BEHAVIORAL] == pytest.approx(15.0 / 65.0)  # behavioral
-    assert sum(applied.values()) == pytest.approx(1.0)  # renormalized
-
-
-def test_zero_weight_omits_signal_even_when_present() -> None:
-    """A configured 0 is a research weight-sweep drop, not a fake measurement of 0."""
+def test_zero_weight_stays_listed_with_zero_contribution() -> None:
+    """A configured 0 silences an arm without removing the signal from the attribution."""
     weights = ScoringWeights(resume=20.0, technical=30.0, communication=0.0, behavioral=15.0)  # zero comm
-    applied = weights.applied({SIGNAL_RESUME, SIGNAL_TECHNICAL, SIGNAL_COMMUNICATION, SIGNAL_BEHAVIORAL})
-    assert SIGNAL_COMMUNICATION not in applied  # dropped
-    assert sum(applied.values()) == pytest.approx(1.0)  # 20+30+15
+    applied = weights.applied()
+    assert applied[SIGNAL_COMMUNICATION] == 0.0  # listed, not dropped
+    assert sum(applied.values()) == pytest.approx(1.0)  # 20+30+15 over 65
+    result = aggregate_session(weights, ats_score=70.0, answers=_full_answers())
+    assert result.attribution["signals"][SIGNAL_COMMUNICATION]["contribution"] == 0.0  # contributes nothing
 
 
 def test_negative_weight_raises() -> None:
     """Negative .env values are a config error, not a silent abs()."""
     with pytest.raises(ScoringConfigError):
-        ScoringWeights(resume=-1.0).applied({SIGNAL_RESUME})  # invalid
+        ScoringWeights(resume=-1.0).applied()  # invalid
 
 
-def test_no_present_signals_raises() -> None:
-    """Cannot composite when every signal is missing."""
+def test_all_zero_weights_raise() -> None:
+    """Cannot normalize when every weight is zero."""
     with pytest.raises(ScoringConfigError):
-        ScoringWeights().applied(set())  # empty
+        ScoringWeights(resume=0.0, technical=0.0, communication=0.0, behavioral=0.0).applied()
 
 
-def test_aggregate_attribution_sums_to_composite() -> None:
-    """Each signal stores weight/value/contribution; contributions sum to composite_score."""
-    answers = [
-        AnswerSignals(question_kind="technical", evaluation={"score": 4}, speech_metrics=None),  # 80/100
-        AnswerSignals(question_kind="behavioral", evaluation={"score": 5}, speech_metrics=None),  # 100/100
-    ]
-    result = aggregate_session(ScoringWeights(), ats_score=70.0, answers=answers)  # text-only
-    assert result.communication_score is None  # omitted, not 0
-    assert SIGNAL_COMMUNICATION in result.omitted  # listed
+def test_aggregate_has_all_four_signals_and_contributions_sum_to_composite() -> None:
+    """Each signal stores weight/value/contribution; contributions sum to the composite; no `omitted` key."""
+    result = aggregate_session(ScoringWeights(), ats_score=70.0, answers=_full_answers())
     assert result.resume_score == pytest.approx(70.0)  # ATS
     assert result.technical_score == pytest.approx(80.0)  # 4 * 20
     assert result.behavioral_score == pytest.approx(100.0)  # 5 * 20
+    assert result.communication_score is not None  # measured from both arms
     signals = result.attribution["signals"]  # nested map
+    assert set(signals) == {SIGNAL_RESUME, SIGNAL_TECHNICAL, SIGNAL_COMMUNICATION, SIGNAL_BEHAVIORAL}  # all four
     contrib = sum(item["contribution"] for item in signals.values())  # reconstruct
     assert result.composite_score == pytest.approx(contrib)  # Article 86 reconstructable
     assert sum(item["weight"] for item in signals.values()) == pytest.approx(1.0)  # applied weights
-    assert SIGNAL_COMMUNICATION not in signals  # not stored as value 0
-    assert result.attribution["formula_version"] == FORMULA_VERSION  # scoring_v1
+    assert "omitted" not in result.attribution  # v2 never omits
+    assert result.attribution["formula_version"] == FORMULA_VERSION == "scoring_v2"  # versioned
+    assert result.attribution["weight_denominator"] == pytest.approx(90.0)  # 20+30+25+15
+
+
+def test_missing_resume_ats_raises_naming_the_signal() -> None:
+    """No ATS means no resume signal; the composite is refused rather than renormalized."""
+    with pytest.raises(IncompleteSignalsError) as info:
+        aggregate_session(ScoringWeights(), ats_score=None, answers=_full_answers())
+    assert info.value.missing == (SIGNAL_RESUME,)  # exactly one missing
+
+
+def test_missing_technical_evaluation_raises() -> None:
+    """No evaluated technical row means no technical signal."""
+    answers = [AnswerSignals(question_kind="behavioral", evaluation={"score": 4}, speech_metrics=_metrics())]
+    with pytest.raises(IncompleteSignalsError) as info:
+        aggregate_session(ScoringWeights(), ats_score=70.0, answers=answers)
+    assert info.value.missing == (SIGNAL_TECHNICAL,)  # behavioral and speech are present
+
+
+def test_missing_behavioral_evaluation_raises() -> None:
+    """No evaluated behavioral row means no behavioral signal."""
+    answers = [AnswerSignals(question_kind="technical", evaluation={"score": 4}, speech_metrics=_metrics())]
+    with pytest.raises(IncompleteSignalsError) as info:
+        aggregate_session(ScoringWeights(), ats_score=70.0, answers=answers)
+    assert info.value.missing == (SIGNAL_BEHAVIORAL,)  # technical and speech are present
+
+
+def test_missing_speech_metrics_raises() -> None:
+    """No scorable speech_metrics means no communication signal (never a fake 0)."""
+    answers = [
+        AnswerSignals(question_kind="technical", evaluation={"score": 4}, speech_metrics=None),
+        AnswerSignals(question_kind="behavioral", evaluation={"score": 4}, speech_metrics=None),
+    ]
+    with pytest.raises(IncompleteSignalsError) as info:
+        aggregate_session(ScoringWeights(), ats_score=70.0, answers=answers)
+    assert info.value.missing == (SIGNAL_COMMUNICATION,)  # only speech is missing
 
 
 def test_follow_up_included_under_question_kind() -> None:
     """Follow-ups average with other answers of the same kind (they keep question_kind)."""
     answers = [
-        AnswerSignals(question_kind="technical", evaluation={"score": 2}, speech_metrics=None),  # original
-        AnswerSignals(question_kind="technical", evaluation={"score": 4}, speech_metrics=None),  # follow-up
+        AnswerSignals(question_kind="technical", evaluation={"score": 2}, speech_metrics=_metrics()),  # original
+        AnswerSignals(question_kind="technical", evaluation={"score": 4}, speech_metrics=_metrics()),  # follow-up
+        AnswerSignals(question_kind="behavioral", evaluation={"score": 3}, speech_metrics=_metrics()),
     ]
     result = aggregate_session(ScoringWeights(), ats_score=50.0, answers=answers)
     assert result.technical_score == pytest.approx(60.0)  # mean 3 * 20
-    assert result.behavioral_score is None  # no behavioral rows
 
 
-def test_missing_evaluation_does_not_count_as_zero() -> None:
-    """A failed evaluate (evaluation null) omits that row; it does not drag the mean to 0."""
+def test_failed_evaluation_does_not_count_as_zero() -> None:
+    """A row with evaluation null is skipped; it does not drag the mean to 0."""
     answers = [
-        AnswerSignals(question_kind="technical", evaluation=None, speech_metrics=None),  # failed judge
-        AnswerSignals(question_kind="technical", evaluation={"score": 5}, speech_metrics=None),  # succeeded
+        AnswerSignals(question_kind="technical", evaluation=None, speech_metrics=_metrics()),  # failed judge
+        AnswerSignals(question_kind="technical", evaluation={"score": 5}, speech_metrics=_metrics()),  # succeeded
+        AnswerSignals(question_kind="behavioral", evaluation={"score": 5}, speech_metrics=_metrics()),
     ]
-    result = aggregate_session(ScoringWeights(), ats_score=None, answers=answers)  # no ATS
-    assert result.resume_score is None  # omitted
+    result = aggregate_session(ScoringWeights(), ats_score=50.0, answers=answers)
     assert result.technical_score == pytest.approx(100.0)  # only the scored row
 
 

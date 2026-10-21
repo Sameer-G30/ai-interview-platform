@@ -4,6 +4,7 @@ from ml.interview import (  # follow-up rule + prompt builders; no HTTP
     FOLLOW_UP_SCORE_MAX,  # inclusive score ceiling that warrants a follow-up
     build_followup_messages,  # complete_json turns for one follow-up question
     build_generate_messages,  # complete_json turns for the initial question list
+    build_topup_messages,  # one extra question of a missing kind
     rubric_name_for_kind,  # technical -> technical_answer; behavioral -> behavioral_answer
     should_follow_up,  # score <= 2 and not already a follow-up
 )
@@ -78,3 +79,29 @@ def test_followup_messages_include_score_and_improvements() -> None:
     assert "A list." in blob  # candidate answer
     assert "1" in blob  # judge score
     assert "mention Big-O" in blob  # judge improvements
+
+
+def test_generate_prompt_demands_both_kinds_and_spoken_answers() -> None:
+    """The generate prompt requires a technical and a behavioral question and says answers are spoken."""
+    messages = build_generate_messages(
+        resume_skills=["Python"], posting_title="Engineer", posting_description=None, posting_required_skills=None
+    )
+    system = messages[0]["content"]  # the instruction turn
+    assert "at least one technical and at least one behavioral" in system  # both kinds required
+    assert "aloud" in system  # spoken, not typed
+    assert "in text" not in system  # the old typed-answer wording is gone
+
+
+def test_topup_prompt_pins_the_missing_kind_and_lists_existing_questions() -> None:
+    """The top-up asks for exactly the missing kind and shows what already exists so it is not repeated."""
+    messages = build_topup_messages(
+        missing_kind="behavioral",
+        existing_questions=["What is a list?"],
+        resume_skills=["Python"],
+        posting_title=None,
+        posting_required_skills=None,
+    )
+    joined = " ".join(turn["content"] for turn in messages)
+    assert "'behavioral'" in joined  # the pinned kind
+    assert "What is a list?" in joined  # existing question shown
+    assert "aloud" in joined  # spoken

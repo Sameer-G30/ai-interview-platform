@@ -5,6 +5,7 @@ import { Link, useNavigate } from "react-router-dom" // back to overview; push t
 import { ApiError } from "@/api/types" // FastAPI detail for the error line
 import { uploadResume } from "@/api/resumes" // multipart POST with XHR progress
 import { ResumeDropzone } from "@/components/resume/resume-dropzone" // drag-drop + file picker
+import { PageHeader } from "@/components/layout/page-header" // shared title block
 import { Button } from "@/components/ui/button" // submit; do not restyle the primitive
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card" // page chrome
 
@@ -28,7 +29,7 @@ export function CandidateResumeUploadPage() {
         setError(caught.detail) // FastAPI message (400/403/413/503/…)
         return // stay on this page
       }
-      setError("could not upload — is the API running?") // network / unexpected
+      setError("could not upload — please try again.") // network / unexpected
     },
   })
 
@@ -36,12 +37,7 @@ export function CandidateResumeUploadPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
-      <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold">Upload resume</h1>
-        <p className="text-muted-foreground">
-          PDF only, 10 MiB max. Parsing runs on the ARQ worker — this page only uploads and enqueues.
-        </p>
-      </div>
+      <PageHeader title="Upload resume" description="PDF only, up to 10 MiB. We extract your skills and score it." />
       <Card>
         <CardHeader>
           <CardTitle>Resume file</CardTitle>

@@ -1,8 +1,9 @@
 """Config-driven scoring weights. Never hardcode these at call sites.
 
 The original brief used 20/30/25/15/10 including coding. Coding was dropped (plan Part 0 / Part 4),
-so the four remaining signals renormalize to sum to 1.0. Defaults keep the brief's 20/30/25/15
-proportions (divide by 90). Product code must use `config_from_settings(get_settings())` because
+so the four remaining weights normalize to sum to 1.0. All four signals are required (scoring_v2).
+Defaults keep the brief's 20/30/25/15 proportions (divide by 90).
+Product code must use `config_from_settings(get_settings())` because
 pydantic-settings does not copy `.env` into `os.environ`.
 """
 
@@ -15,7 +16,7 @@ from typing import Any  # config_from_settings is duck-typed so ml/ does not imp
 # Signal keys stored on scores.attribution["signals"] and as Score column names without _score.
 SIGNAL_RESUME = "resume"  # resumes.ats_score mapped 0–100
 SIGNAL_TECHNICAL = "technical"  # mean of technical answers' evaluation.score, scaled 0–5 → 0–100
-SIGNAL_COMMUNICATION = "communication"  # mapped from existing speech_metrics; omitted when none exist
+SIGNAL_COMMUNICATION = "communication"  # mapped from speech_metrics; required in scoring_v2
 SIGNAL_BEHAVIORAL = "behavioral"  # mean of behavioral answers' evaluation.score, scaled 0–5 → 0–100
 ALL_SIGNALS = (SIGNAL_RESUME, SIGNAL_TECHNICAL, SIGNAL_COMMUNICATION, SIGNAL_BEHAVIORAL)  # iteration order for reports
 
@@ -26,7 +27,7 @@ DEFAULT_WEIGHT_COMMUNICATION = 25.0  # SCORE_WEIGHT_COMMUNICATION; 25/90
 DEFAULT_WEIGHT_BEHAVIORAL = 15.0  # SCORE_WEIGHT_BEHAVIORAL; 15/90
 
 # Version string persisted in attribution so a later formula swap can still explain an old composite.
-FORMULA_VERSION = "scoring_v1"  # bump when the communication mapping or judge scale changes
+FORMULA_VERSION = "scoring_v2"  # v2: all four signals required, no omission or renormalizing by dropping
 
 # Judge JSON is 0–5 inclusive; ATS is already 0–100. Scale the judge onto the same range before weighting.
 JUDGE_SCORE_MAX = 5.0  # AnswerEvaluation.score upper bound from ml.llm
@@ -39,11 +40,10 @@ class ScoringConfigError(ValueError):
 
 @dataclass(frozen=True)
 class ScoringWeights:
-    """Four raw weights from Settings / .env. Call `applied()` to renormalize over present signals.
+    """Four raw weights from Settings / .env. Call `applied()` to normalize them over all four signals.
 
     Raw values may be percentages (20/30/25/15) or already-unit fractions. `applied()` only cares
-    about their ratios. A non-positive weight is treated as "do not use this signal" even if data
-    exists, matching a research weight-sweep that zeros one arm.
+    about their ratios. A zero weight keeps the signal listed with contribution 0.
     """
 
     resume: float = DEFAULT_WEIGHT_RESUME  # SCORE_WEIGHT_RESUME
@@ -76,28 +76,22 @@ class ScoringWeights:
             SIGNAL_BEHAVIORAL: float(self.behavioral),  # same
         }
 
-    def applied(self, present: set[str]) -> dict[str, float]:
-        """Renormalize configured weights over `present` signals so they sum to 1.0.
+    def applied(self) -> dict[str, float]:
+        """Normalize the four configured weights so they sum to 1.0 (20/90, 30/90, 25/90, 15/90 by default).
 
-        Signals missing from `present`, or whose configured weight is <= 0, are omitted. Raises
-        ScoringConfigError if a configured weight is negative or if the remaining mass is 0.
+        Every signal is required in scoring_v2, so there is no "present" set and nothing is dropped
+        for missing data. A zero weight stays listed with weight 0.0 (a research weight sweep can
+        silence an arm without changing which signals exist). Raises ScoringConfigError on a
+        negative weight or when all four are zero.
         """
-        raw = self.as_dict()  # four configured numbers
+        raw = self.as_dict()  # four configured numbers, ALL_SIGNALS order
         for name, value in raw.items():
             if value < 0.0:
                 raise ScoringConfigError(f"scoring weight for {name} must be >= 0, got {value}")  # misconfigured .env
-        usable: dict[str, float] = {}  # only signals we both have data for and a positive weight
-        for name in ALL_SIGNALS:
-            if name not in present:
-                continue  # no measurement this session (e.g. text-only → no communication)
-            weight = raw[name]  # configured mass for this signal
-            if weight <= 0.0:
-                continue  # explicit zero means "drop this arm" for a weight sweep
-            usable[name] = weight  # keep the raw number; divide below
-        total = sum(usable.values())  # remaining mass
+        total = sum(raw.values())  # 90.0 with the defaults
         if total <= 0.0:
-            raise ScoringConfigError("no positive scoring weights left after omitting missing signals")
-        return {name: weight / total for name, weight in usable.items()}  # guaranteed to sum to 1.0
+            raise ScoringConfigError("at least one scoring weight must be positive")  # all zero cannot normalize
+        return {name: value / total for name, value in raw.items()}  # sums to 1.0; zero weights stay as 0.0
 
 
 def config_from_settings(settings: Any) -> ScoringWeights:

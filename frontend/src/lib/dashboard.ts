@@ -198,13 +198,14 @@ export function buildRecommendations(args: {
     })
   }
   if (args.latestScore !== null) {
-    const omitted = args.latestScore.attribution?.omitted ?? [] // scoring_v1 omitted list
+    const omitted = args.latestScore.attribution?.omitted ?? [] // only legacy scoring_v1 rows carry this list
     const communicationOmitted =
       omitted.includes("communication") || args.latestScore.communication_score === null
     if (communicationOmitted) {
+      // Fires only for legacy rows: every scoring_v2 session stores communication from the spoken answers.
       items.push({
         id: "record-audio",
-        text: "Communication was not recorded on your last scored session. Upload a WebM answer next time so both fluency arms can be scored.",
+        text: "Your last scored session predates spoken answers, so communication was not recorded. Take a new interview and answer aloud to get a full four-signal score.",
       })
     }
     if (args.latestScore.resume_score !== null && args.latestScore.resume_score < 70) {

@@ -29,7 +29,7 @@ export function AdminScoresPage() {
     scoresQuery.error instanceof ApiError
       ? scoresQuery.error.detail
       : scoresQuery.isError
-        ? "could not load scores — is the API running?"
+        ? "could not load scores — please try again."
         : null
 
   return (
@@ -37,8 +37,8 @@ export function AdminScoresPage() {
       <CardHeader>
         <CardTitle>Scores</CardTitle>
         <CardDescription>
-          Stored Score rows only. Practice sessions appear here (ops). Communication stays “Not recorded” when the
-          signal was omitted — never charted as 0.
+          Stored scores, practice sessions included. Every current score has all four signals; only older sessions
+          scored before spoken answers can show “Not recorded”.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">

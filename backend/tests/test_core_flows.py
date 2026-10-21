@@ -12,11 +12,16 @@ import uuid  # resume primary keys come back as UUID strings on the wire
 
 import pymupdf  # builds the one-page PDF the parse worker actually opens
 import pytest  # approx() for the renormalized composite
-from interview_fakes import (  # same fake judge the scoring tests use; not live Ollama
+from interview_fakes import (  # shared fakes: judge, speech pipeline, session helpers; never live Ollama/Whisper
     FakeInterviewBackend,
+    insert_resume,
+    insert_session_with_questions,
     install_fake,
+    install_fake_speech,
+    speak,
 )
 from ml.scoring import (  # product weights, so the expected composite tracks Settings
+    ALL_SIGNALS,
     SIGNAL_BEHAVIORAL,
     SIGNAL_COMMUNICATION,
     SIGNAL_RESUME,
@@ -199,21 +204,16 @@ async def test_upload_rejects_empty_and_oversize_before_enqueue(client, redis_po
         assert jobs == 0  # no resume_parse job
 
 
-async def test_upload_parse_and_text_submit_writes_renormalized_score(client, redis_pool, monkeypatch):
-    """Upload → parse (fake embed) → text submit → stored composite. Communication stays null.
+async def test_upload_parse_and_spoken_answers_write_a_four_signal_score(client, redis_pool, monkeypatch):
+    """Upload -> parse (fake embed) -> speak every question -> stored scoring_v2 composite with all four signals.
 
-    The composite uses the configured weights renormalized over the signals that exist. It is not
-    the partial sum that still divides by the full four-signal total ("out of 90").
+    The composite is the 20/90, 30/90, 25/90, 15/90 weighted sum of resume ATS, technical, communication,
+    and behavioral. Nothing is omitted or renormalized by dropping a signal.
     """
     del redis_pool  # fixture attaches app.state.redis; the assertions do not touch the pool object
     monkeypatch.setattr("app.workers.tasks.embed_text", _fake_embed_text)  # do not load MiniLM
-    install_fake(
-        monkeypatch,
-        FakeInterviewBackend(
-            questions=[{"question_text": "What is a Python list?", "question_kind": "technical"}],  # one question
-            evaluation={"score": 4, "rationale": "Clear definition.", "strengths": ["correct"], "improvements": []},
-        ),
-    )  # score 4 does not spawn a follow-up, so the session completes on this submit
+    install_fake(monkeypatch, FakeInterviewBackend())  # technical + behavioral, score 4 each: no follow-up
+    install_fake_speech(monkeypatch)  # fake transcript + both fluency arms; no Whisper
     token, _user_id = await _create_user("flow-score@example.com", UserRole.CANDIDATE)  # owner of the resume
 
     created = await client.post(
@@ -242,92 +242,62 @@ async def test_upload_parse_and_text_submit_writes_renormalized_score(client, re
 
     async with AsyncSessionLocal() as session:  # embedding is intentionally absent from ResumeOut
         stored = await session.get(Resume, uuid.UUID(resume_id))  # the row the worker committed
-        assert stored is not None  # upload inserted it
-        assert stored.status == ResumeStatus.PARSED  # same fact as the HTTP body
-        assert stored.embedding is not None  # parsed implies embedded, in this same worker pass
-        assert len(list(stored.embedding)) == 384  # pgvector width; the fake vector, not MiniLM weights
+        assert stored is not None and stored.status == ResumeStatus.PARSED  # same fact as the HTTP body
+        assert stored.embedding is not None and len(list(stored.embedding)) == 384  # parsed implies embedded
 
     started = await client.post("/interviews", json={"resume_id": resume_id}, headers=_bearer(token))  # practice
     assert started.status_code == 201, started.text  # generate enqueued
     session_id = started.json()["session_id"]  # score id equals the session id
-    await run_burst_worker()  # fake generate writes the question; no Ollama
+    await run_burst_worker()  # fake generate writes both questions; no Ollama
 
-    session_body = (await client.get(f"/interviews/{session_id}", headers=_bearer(token))).json()  # questions
-    assert session_body["answers"][0]["answer_text"] is None  # generate does not invent an answer
-    answer_id = session_body["answers"][0]["id"]  # the only question
-    answer_text = "A mutable ordered sequence of objects."  # the only scoring path is this text
-    submitted = await client.post(
-        f"/interviews/{session_id}/answers/{answer_id}",
-        json={"answer_text": answer_text},  # text submit enqueues interview_evaluate, not transcribe
-        headers=_bearer(token),
-    )
-    assert submitted.status_code == 200, submitted.text  # queued
-    await run_burst_worker()  # fake evaluate + aggregate_session; no second model
+    answers = (await client.get(f"/interviews/{session_id}", headers=_bearer(token))).json()["answers"]
+    assert {row["question_kind"] for row in answers} == {"technical", "behavioral"}  # both kinds guaranteed
+    for row in answers:  # every answer is spoken
+        uploaded = await speak(client, token, session_id, row["id"])
+        assert uploaded.status_code == 200, uploaded.text  # blob stored, transcribe queued
+        await run_burst_worker()  # fake transcribe -> answer_text -> fake evaluate (+ complete on the last row)
 
     final_session = (await client.get(f"/interviews/{session_id}", headers=_bearer(token))).json()  # after evaluate
-    assert final_session["status"] == "completed"  # one passing answer, no follow-up
-    assert final_session["answers"][0]["answer_text"] == answer_text  # stored text, not a transcript copy
-    assert final_session["answers"][0]["transcript"] is None  # text submit does not invent speech
+    assert final_session["status"] == "completed"  # audio + metrics + text + evaluation on every row
+    for row in final_session["answers"]:
+        assert row["answer_text"] == row["transcript"] == "hello world"  # transcript is the answer
 
     scored = await client.get(f"/scores/{session_id}", headers=_bearer(token))  # stored row, not a recompute
     assert scored.status_code == 200, scored.text  # owner
     body = scored.json()  # ScoreOut
     ats = float(parsed_body["ats_score"])  # resume signal is the parsed ATS
-    technical = scale_judge_score(4)  # judge 0–5 times 20 → 0–100
+    technical = scale_judge_score(4)  # judge 0-5 times 20 -> 0-100
     assert body["resume_score"] == pytest.approx(ats)  # the upload's ATS, not a hardcoded fixture
     assert body["technical_score"] == pytest.approx(technical)  # 4 * 20
-    assert body["communication_score"] is None  # text-only; not stored as 0
-    assert body["behavioral_score"] is None  # no behavioral question
-    assert SIGNAL_COMMUNICATION in body["attribution"]["omitted"]  # reconstructable omission
-    assert SIGNAL_BEHAVIORAL in body["attribution"]["omitted"]  # same
+    assert body["behavioral_score"] == pytest.approx(technical)  # 4 * 20
+    assert body["communication_score"] is not None  # real measurement, never null or a fake 0
+    assert body["attribution"]["formula_version"] == "scoring_v2"  # versioned
+    assert set(body["attribution"]["signals"]) == set(ALL_SIGNALS)  # all four, no `omitted`
     weights = config_from_settings(settings)  # SCORE_WEIGHT_* from Settings, same as the worker
-    applied = weights.applied({SIGNAL_RESUME, SIGNAL_TECHNICAL})  # renormalize over the two present signals
-    assert sum(applied.values()) == pytest.approx(1.0)  # the applied weights are a full share, not 50/90
-    expected = applied[SIGNAL_RESUME] * ats + applied[SIGNAL_TECHNICAL] * technical  # 0–100 composite
+    applied = weights.applied()  # 20/90, 30/90, 25/90, 15/90 by default
+    expected = (
+        applied[SIGNAL_RESUME] * ats
+        + applied[SIGNAL_TECHNICAL] * technical
+        + applied[SIGNAL_COMMUNICATION] * body["communication_score"]
+        + applied[SIGNAL_BEHAVIORAL] * technical
+    )  # 0-100 composite
     assert body["composite_score"] == pytest.approx(expected)  # stored value matches that formula
     assert 0.0 <= body["composite_score"] <= 100.0  # not an unscaled sum of the raw weights
-    raw = weights.as_dict()  # configured weights before omission
-    full_mass = sum(raw.values())  # 90 with the default 20/30/25/15
-    if raw[SIGNAL_COMMUNICATION] > 0 or raw[SIGNAL_BEHAVIORAL] > 0:  # otherwise the two formulas coincide
-        divided_by_full = (raw[SIGNAL_RESUME] / full_mass) * ats + (raw[SIGNAL_TECHNICAL] / full_mass) * technical
-        assert body["composite_score"] != pytest.approx(divided_by_full)  # omitted weights left the denominator
     again = (await client.get(f"/scores/{session_id}", headers=_bearer(token))).json()  # second read
     assert again == body  # GET did not recompute or rewrite the stored row
 
 
-async def test_audio_upload_does_not_write_a_score(client, redis_pool, monkeypatch):
-    """Audio enqueue is transcribe only. With no text submit, GET /scores stays 404 and answer_text stays null."""
+async def test_audio_upload_alone_does_not_write_a_score(client, redis_pool, monkeypatch):
+    """An upload only queues transcribe. Until the worker runs, answer_text is null and GET /scores is 404."""
     del redis_pool  # pool is attached for the enqueue; this test does not drain it after the audio post
-    install_fake(monkeypatch, FakeInterviewBackend())  # generate one question; do not call Ollama
+    install_fake(monkeypatch, FakeInterviewBackend())  # no Ollama
     token, user_id = await _create_user("flow-audio-noscore@example.com", UserRole.CANDIDATE)  # candidate
-    async with AsyncSessionLocal() as session:  # a parsed resume without going through MiniLM or a second upload
-        resume = Resume(
-            user_id=user_id,  # owner
-            file_path="/tmp/flow-audio-noscore.pdf",  # never opened; generate only reads parsed_data
-            original_filename="resume.pdf",  # display name
-            status=ResumeStatus.PARSED,  # POST /interviews requires parsed
-            parsed_data={"sections": {}, "skills": ["Python"], "email": None, "phone": None},  # prompt skills
-            ats_score=70.0,  # unused until a text submit completes the session
-        )
-        session.add(resume)  # insert
-        await session.commit()  # start must see it
-        resume_id = str(resume.id)  # JSON resume_id is a string
+    resume_id = await insert_resume(user_id)  # parsed, ATS 70
+    session_id, answer_ids = await insert_session_with_questions(user_id, resume_id)  # two unanswered rows
 
-    started = await client.post("/interviews", json={"resume_id": resume_id}, headers=_bearer(token))  # practice
-    assert started.status_code == 201, started.text  # generate queued
-    session_id = started.json()["session_id"]  # later score lookup
-    await run_burst_worker()  # generate only; the queue is empty afterward
-    answer_id = (await client.get(f"/interviews/{session_id}", headers=_bearer(token))).json()["answers"][0]["id"]
-
-    uploaded = await client.post(
-        f"/interviews/{session_id}/answers/{answer_id}/audio",
-        files={"file": ("answer.webm", b"webm-test-bytes", "audio/webm")},  # upload does not decode this
-        headers=_bearer(token),
-    )
-    assert uploaded.status_code == 200, uploaded.text  # blob stored, transcribe queued
-    assert uploaded.json()["async_job_id"]  # a job exists
+    uploaded = await speak(client, token, session_id, answer_ids[0])  # blob stored, transcribe queued
+    assert uploaded.status_code == 200, uploaded.text
     # Do not burst: the queued job is transcribe, and this test must not load Whisper.
-
     polled = await client.get(f"/jobs/{uploaded.json()['async_job_id']}", headers=_bearer(token))  # still queued
     assert polled.json()["job_type"] == "transcribe"  # not interview_evaluate
     assert polled.json()["status"] == "queued"  # worker has not run
@@ -335,4 +305,4 @@ async def test_audio_upload_does_not_write_a_score(client, redis_pool, monkeypat
     assert fetched["answers"][0]["answer_text"] is None  # audio did not copy itself into the scoring text
     assert fetched["answers"][0]["transcript"] is None  # no transcript until a worker runs
     missing = await client.get(f"/scores/{session_id}", headers=_bearer(token))  # no composite yet
-    assert missing.status_code == 404  # audio is not a scoring path
+    assert missing.status_code == 404  # an upload alone is never a score

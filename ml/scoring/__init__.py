@@ -11,6 +11,7 @@ Public surface the worker, report route, and research harness should import from
 from ml.scoring.aggregate import (  # session-level math
     AggregationResult,
     AnswerSignals,
+    IncompleteSignalsError,
     aggregate_session,
 )
 from ml.scoring.communication import (  # speech_metrics → 0–100 mapping
@@ -36,7 +37,8 @@ __all__ = [  # public surface documented for the worker and research harness
     "ALL_SIGNALS",  # resume / technical / communication / behavioral
     "AggregationResult",  # composite + attribution
     "AnswerSignals",  # per-answer input to aggregate_session
-    "FORMULA_VERSION",  # scoring_v1
+    "IncompleteSignalsError",  # raised when any of the four signals is missing
+    "FORMULA_VERSION",  # scoring_v2
     "ReportAnswer",  # one PDF answer block
     "ReportContext",  # PDF inputs
     "SIGNAL_BEHAVIORAL",  # attribution key

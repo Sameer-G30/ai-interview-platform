@@ -37,10 +37,11 @@ def build_generate_messages(
     required_text = posting_required_skills.strip() if posting_required_skills else "(none)"  # freeform required_skills
     system = (  # tells the model what to produce; the JSON schema is prepended by complete_json
         "You generate interview questions for a hiring screen. "
-        f"Produce exactly {question_count} questions mixing technical and behavioral kinds. "
+        f"Produce exactly {question_count} questions with at least one technical and at least one behavioral "
+        "question (set question_kind accordingly). "
         "Target the posting's role and required skills when a posting is provided; "
         "otherwise target the candidate's extracted skills. "
-        "Each question must be a single clear prompt the candidate can answer in text."
+        "Each question must be a single clear prompt the candidate will answer aloud, in about a minute of speech."
     )
     user = (  # the only session-specific facts the model should use
         f"Role title:\n{title_text}\n\n"
@@ -54,6 +55,35 @@ def build_generate_messages(
     ]
 
 
+def build_topup_messages(
+    *,
+    missing_kind: str,
+    existing_questions: list[str],
+    resume_skills: list[str],
+    posting_title: str | None,
+    posting_required_skills: str | None,
+) -> list[dict[str, str]]:
+    """Ask for exactly one extra question of the kind the first generation did not produce."""
+    skills_text = ", ".join(resume_skills) if resume_skills else "(none extracted)"  # ESCO preferred labels
+    title_text = posting_title.strip() if posting_title else "(practice interview; no job posting)"  # optional posting
+    required_text = posting_required_skills.strip() if posting_required_skills else "(none)"  # freeform
+    already = "\n".join(f"- {text}" for text in existing_questions) or "(none)"  # avoid duplicates
+    system = (  # one InterviewQuestion, with the required kind pinned
+        f"You write one additional interview question whose question_kind is exactly {missing_kind!r}. "
+        "Do not repeat any existing question. The candidate will answer aloud, in about a minute of speech."
+    )
+    user = (  # same facts as the generate prompt, plus what already exists
+        f"Role title:\n{title_text}\n\n"
+        f"Required skills:\n{required_text}\n\n"
+        f"Candidate extracted skills:\n{skills_text}\n\n"
+        f"Existing questions:\n{already}"
+    )
+    return [
+        {"role": "system", "content": system},  # top-up instructions
+        {"role": "user", "content": user},  # facts + existing questions
+    ]
+
+
 def build_followup_messages(
     *,
     question_text: str,
@@ -64,13 +94,13 @@ def build_followup_messages(
     """Build the turns for one follow-up question that probes the judge's gaps on this answer."""
     improvements = "; ".join(evaluation.improvements) if evaluation.improvements else "(none listed)"  # may be empty
     system = (  # one question only; schema is InterviewQuestion, not a list
-        "You write one follow-up interview question that probes the gaps in the candidate's answer. "
+        "You write one follow-up interview question that probes the gaps in the candidate's spoken answer. "
         "Stay on the same topic as the original question. Do not repeat the original question. "
         f"Keep question_kind as {question_kind!r} unless the gap is clearly the other kind."
     )
     user = (  # original Q, the text answer, the 0-5 score, and the judge's improvement notes
         f"Original question:\n{question_text}\n\n"
-        f"Candidate answer:\n{answer_text}\n\n"
+        f"Candidate answer (transcribed from speech):\n{answer_text}\n\n"
         f"Judge score (0-5): {evaluation.score}\n"
         f"Judge improvements:\n{improvements}"
     )

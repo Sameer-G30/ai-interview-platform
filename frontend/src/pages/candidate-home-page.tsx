@@ -9,7 +9,7 @@ import { InterviewHistoryCard } from "@/components/dashboard/interview-history" 
 import { RecommendationsCard } from "@/components/dashboard/recommendations-card" // derived coaching
 import { ScoreSummaryCard, ScoreSummaryEmpty } from "@/components/dashboard/score-summary" // four signals
 import { SkillGapCard } from "@/components/dashboard/skill-gap-card" // GET /matches
-import { JobQueueDemo } from "@/components/jobs/queue-demo" // Phase 4 enqueue + poll proof; keep this card
+import { PageHeader } from "@/components/layout/page-header" // shared title block
 import { Button } from "@/components/ui/button" // outline links
 import { Skeleton } from "@/components/ui/skeleton" // loading placeholders
 import { useAuth } from "@/hooks/use-auth" // welcome email
@@ -47,7 +47,7 @@ export function CandidateHomePage() {
     historyQuery.error instanceof ApiError
       ? historyQuery.error.detail
       : historyQuery.isError
-        ? "could not load interview history — is the API running?"
+        ? "could not load interview history — please try again."
         : null
 
   const inProgress = hasInProgressWithoutScore(historyQuery.data) // banner + recommendation
@@ -61,24 +61,23 @@ export function CandidateHomePage() {
 
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
-      <div className="flex flex-col gap-3">
-        <h1 className="text-2xl font-semibold">Candidate dashboard</h1>
-        <p className="text-muted-foreground">
-          Signed in as {user?.email}. Scores are stored composites (not recomputed here). Communication stays “Not
-          recorded” on text-only sessions.
-        </p>
-        <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="outline" asChild>
-            <Link to="/candidate/resume">Open resume upload</Link>
-          </Button>
-          <Button type="button" variant="outline" asChild>
-            <Link to="/candidate/matches">Open matches</Link>
-          </Button>
-          <Button type="button" variant="outline" asChild>
-            <Link to="/candidate/interview">Open interview</Link>
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title="Candidate dashboard"
+        description={`Signed in as ${user?.email ?? ""}. Every completed interview scores four signals: resume, technical, communication, and behavioral.`}
+        actions={
+          <>
+            <Button type="button" variant="outline" asChild>
+              <Link to="/candidate/resume">Open resume upload</Link>
+            </Button>
+            <Button type="button" variant="outline" asChild>
+              <Link to="/candidate/matches">Open matches</Link>
+            </Button>
+            <Button type="button" variant="outline" asChild>
+              <Link to="/candidate/interview">Open interview</Link>
+            </Button>
+          </>
+        }
+      />
       {historyQuery.isPending || (completed !== undefined && scoreQuery.isPending) ? (
         <Skeleton className="h-40 w-full" />
       ) : null}
@@ -90,19 +89,19 @@ export function CandidateHomePage() {
       {noParsedResume ? (
         <ScoreSummaryEmpty
           title="No parsed resume yet"
-          body="Upload a PDF so ATS, matches, and interviews can run. There is no composite until you complete a session."
+          body="Upload a PDF resume so matching and interviews can run. You get a score after you finish an interview."
         />
       ) : null}
       {!noParsedResume && historyQuery.data !== undefined && historyQuery.data.length === 0 ? (
         <ScoreSummaryEmpty
           title="No sessions yet"
-          body="Start a practice interview or pick a posting on Matches. A composite appears after evaluate completes the session."
+          body="Start a practice interview or pick a posting on Matches. Your score appears after you answer every question aloud."
         />
       ) : null}
       {!noParsedResume && inProgress && completed === undefined ? (
         <ScoreSummaryEmpty
           title="Interview in progress"
-          body="This session has no stored Score yet. Finish answering — GET /scores/{id} 404s until the session is completed."
+          body="This session has no score yet. Finish answering every question aloud and your score will appear here."
         />
       ) : null}
       {scoreQuery.data !== undefined && completed !== undefined ? (
@@ -111,7 +110,6 @@ export function CandidateHomePage() {
       {historyQuery.data !== undefined ? <InterviewHistoryCard sessions={historyQuery.data} /> : null}
       <SkillGapCard noParsedResume={noParsedResume} matches={noParsedResume ? undefined : matchesQuery.data?.matches} />
       <RecommendationsCard items={recommendations} />
-      <JobQueueDemo />
     </div>
   )
 }

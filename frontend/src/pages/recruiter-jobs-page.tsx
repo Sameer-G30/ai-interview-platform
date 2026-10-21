@@ -6,6 +6,7 @@ import { Controller, useForm } from "react-hook-form" // form state, validation,
 import { createPosting, listPostings, postingQueryKeys, updatePosting } from "@/api/postings" // typed /postings client
 import { ApiError } from "@/api/types" // FastAPI detail for the error banner
 import type { PostingOut } from "@/api/types" // list item shape
+import { PageHeader } from "@/components/layout/page-header" // shared title block
 import { Button } from "@/components/ui/button" // submit + deactivate actions
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card" // page chrome
 import { Field, FieldError, FieldGroup, FieldLabel } from "@/components/ui/field" // accessible field wrapper
@@ -22,7 +23,7 @@ function PostingRow({ posting, onDeactivated }: { posting: PostingOut; onDeactiv
     mutationFn: () => updatePosting(posting.id, { is_active: false }),
     onSuccess: onDeactivated,
     onError: (caught) => {
-      setError(caught instanceof ApiError ? caught.detail : "could not update — is the API running?")
+      setError(caught instanceof ApiError ? caught.detail : "could not update — please try again.")
     },
   })
 
@@ -44,7 +45,7 @@ function PostingRow({ posting, onDeactivated }: { posting: PostingOut; onDeactiv
             {posting.is_active ? "Active" : "Inactive"}
           </span>
           <span className="rounded-full border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-            {posting.has_embedding ? "Embedded" : "Embedding…"}
+            {posting.has_embedding ? "Ready for matching" : "Preparing…"}
           </span>
         </div>
       </div>
@@ -103,7 +104,7 @@ export function RecruiterJobsPage() {
       await queryClient.invalidateQueries({ queryKey: postingQueryKeys.list() }) // show the new row immediately
     },
     onError: (caught) => {
-      setApiError(caught instanceof ApiError ? caught.detail : "could not create posting — is the API running?")
+      setApiError(caught instanceof ApiError ? caught.detail : "could not create posting — please try again.")
     },
   })
 
@@ -121,12 +122,7 @@ export function RecruiterJobsPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
-      <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold">Jobs</h1>
-        <p className="text-muted-foreground">
-          Create postings and see which candidates match. Embedding runs on the ARQ worker after you submit.
-        </p>
-      </div>
+      <PageHeader title="Jobs" description="Create postings so candidates can match and interview for them." />
       <Card>
         <CardHeader>
           <CardTitle>New posting</CardTitle>

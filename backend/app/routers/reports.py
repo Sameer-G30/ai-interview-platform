@@ -4,6 +4,7 @@ Does not call Ollama or Whisper. Dual fluency is copied from `answers.speech_met
 HTML (both arms). Blobs may be cached under `<storage_root>/reports/` (gitignored via `/data/`).
 """
 
+import asyncio  # to_thread keeps WeasyPrint off the event loop
 import uuid  # path param
 from datetime import UTC, datetime  # generated_at stamp on the PDF
 
@@ -78,13 +79,14 @@ async def download_report(
         generated_at=datetime.now(UTC).isoformat(),  # PDF generation time, not completed_at
     )
     try:
-        pdf = render_report_pdf(ctx)  # WeasyPrint
+        pdf = await asyncio.to_thread(render_report_pdf, ctx)  # WeasyPrint is CPU-bound sync code
     except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="PDF renderer unavailable",
         ) from exc  # missing cairo mid-request
-    maybe_cache_pdf(settings.storage_root, str(interview.id), pdf)  # gitignored blob; response still streams memory
+    # Cache write is blocking file I/O, so it also leaves the event loop; the response still streams memory.
+    await asyncio.to_thread(maybe_cache_pdf, settings.storage_root, str(interview.id), pdf)
     filename = f"interview-report-{interview.id}.pdf"  # Content-Disposition
     return Response(
         content=pdf,  # bytes

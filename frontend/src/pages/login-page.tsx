@@ -33,7 +33,7 @@ export function LoginPage() {
         setApiError(error.detail) // show FastAPI's message (401, 429, ...)
         return // stay on the form
       }
-      setApiError("could not sign in — is the API running?") // network / unexpected
+      setApiError("could not sign in — please try again.") // network / unexpected
     }
   }
 

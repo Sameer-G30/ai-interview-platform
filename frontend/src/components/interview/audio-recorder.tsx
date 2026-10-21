@@ -13,8 +13,9 @@ type AudioRecorderProps = {
   sessionId: string // POST .../audio path param
   answerId: string // POST .../audio path param
   hasAudio: boolean // from GET session has_audio; true after a successful upload (or a previous visit)
-  disabled?: boolean // true while text evaluate is in flight or the session is abandoned
+  disabled?: boolean // true once the answer is scored or the session is closed
   onUploaded: (body: AudioUploadOut) => void // parent stores async_job_id and refetches has_audio
+  onUploadingChange?: (uploading: boolean) => void // lets the page show the "Uploading" progress step
 }
 
 // True when this browser claims MediaRecorder + the Opus/WebM mime the backend accepts.
@@ -39,7 +40,14 @@ function rmsFromTimeDomain(bytes: Uint8Array): number {
 }
 
 // Chromium MediaRecorder capture: permission, waveform + level, upload with progress, retry/overwrite.
-export function AudioRecorder({ sessionId, answerId, hasAudio, disabled = false, onUploaded }: AudioRecorderProps) {
+export function AudioRecorder({
+  sessionId,
+  answerId,
+  hasAudio,
+  disabled = false,
+  onUploaded,
+  onUploadingChange,
+}: AudioRecorderProps) {
   const [gate, setGate] = useState<RecorderGate>(() => (isOpusWebmSupported() ? "ready" : "unsupported")) // compute once
   const [recording, setRecording] = useState(false) // true between start() and onstop
   const [blob, setBlob] = useState<Blob | null>(null) // last take; null until Stop
@@ -48,6 +56,10 @@ export function AudioRecorder({ sessionId, answerId, hasAudio, disabled = false,
   const [uploading, setUploading] = useState(false) // freeze buttons while POST is in flight
   const [error, setError] = useState<string | null>(null) // permission / size / API errors
   const [uploadedHere, setUploadedHere] = useState(false) // local success so retry copy can change before refetch
+
+  useEffect(() => {
+    onUploadingChange?.(uploading) // report the upload step to the parent's progress line
+  }, [uploading, onUploadingChange])
 
   const mediaRef = useRef<MediaRecorder | null>(null) // active recorder, stopped on unmount
   const streamRef = useRef<MediaStream | null>(null) // mic tracks to stop after recording
@@ -180,12 +192,12 @@ export function AudioRecorder({ sessionId, answerId, hasAudio, disabled = false,
       const name = caught instanceof DOMException ? caught.name : "" // NotAllowedError / NotFoundError / ...
       if (name === "NotAllowedError" || name === "PermissionDeniedError") {
         setGate("denied") // mic blocked
-        setError("Microphone permission was denied. Type an answer instead, or allow the mic and retry.")
+        setError("Microphone permission was denied. Allow the microphone for this site and try again.")
         return // stay on this question
       }
       if (name === "NotFoundError") {
         setGate("unavailable") // no input device
-        setError("No microphone was found. You can still type an answer.")
+        setError("No microphone was found. Connect one to answer; spoken answers are required.")
         return // stay on this question
       }
       setError("Could not start the recorder. Chromium is required; Safari is not supported.") // generic
@@ -228,15 +240,15 @@ export function AudioRecorder({ sessionId, answerId, hasAudio, disabled = false,
         setError(caught.detail) // FastAPI 400/404/409/429
         return // stay on this take
       }
-      setError("could not upload audio — is the API running?") // network
+      setError("could not upload audio — please try again.") // network
     }
   }
 
   if (gate === "unsupported") {
     return (
       <p className="text-sm text-muted-foreground">
-        Audio capture needs Chromium (Chrome or Edge) with <code>audio/webm;codecs=opus</code>. You can still type an
-        answer. Safari is not supported this phase.
+        Recording your answer is required, and it needs Chromium (Chrome or Edge) with{" "}
+        <code>audio/webm;codecs=opus</code>. Safari is not supported.
       </p>
     )
   }
@@ -249,8 +261,8 @@ export function AudioRecorder({ sessionId, answerId, hasAudio, disabled = false,
   return (
     <div className="flex flex-col gap-3">
       <p className="text-xs text-muted-foreground">
-        Optional recording. Upload queues transcription (ffmpeg + Whisper). Submitting text is what scores the answer.
-        Target Chromium; capture is <code>audio/webm;codecs=opus</code>.
+        Recording is required: answer the question aloud, stop, then upload. We transcribe your speech and score what
+        we heard.
       </p>
       <canvas
         ref={canvasRef}
@@ -299,7 +311,9 @@ export function AudioRecorder({ sessionId, answerId, hasAudio, disabled = false,
           {uploading ? `Uploading… ${percent}%` : stored ? "Re-upload" : "Upload recording"}
         </Button>
       </div>
-      {stored ? <p className="text-xs text-muted-foreground">Recording stored. You can re-record and upload again.</p> : null}
+      {stored ? (
+        <p className="text-xs text-muted-foreground">Recording stored. You can record again until it is scored.</p>
+      ) : null}
       {error !== null ? (
         <p className="text-sm text-destructive" role="alert">
           {error}

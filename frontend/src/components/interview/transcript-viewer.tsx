@@ -7,18 +7,18 @@ import { formatProbability, formatSeconds, formatWordClock } from "@/lib/speech-
 // Copy for the cases where answers.transcript is still null. Do not invent a transcript string.
 function emptyCopy(state: SpeechAnalysisState): string {
   if (state === "pending") {
-    return "Transcription in progress. The full transcript and word timings appear when the worker finishes." // poller still open
+    return "Transcription in progress. The transcript and word timings appear when it finishes."
   }
   if (state === "failed") {
     return "Transcription failed. You can re-upload the recording. No transcript was stored." // session is not abandoned
   }
   if (state === "stored") {
-    return "Recording stored. Reload after the worker finishes to see the transcript, or re-upload to queue transcribe again." // no in-memory job id
+    return "Recording stored. The transcript appears when transcription finishes. You can record again until this answer is scored."
   }
   if (state === "ready") {
     return "No transcript text or word timings on this row." // payload present but empty
   }
-  return "No recording for this answer. A transcript needs audio; you can still score a typed answer." // text-only
+  return "No recording for this answer yet."
 }
 
 // Tailwind class for Whisper probability: visual hint only, not a new score.
@@ -73,7 +73,7 @@ export function TranscriptViewer({
       {words.length > 0 ? (
         <div className="flex flex-col gap-2">
           <p className="text-xs text-muted-foreground">
-            Word timings from speech_metrics.words. Tap a word for start/end and Whisper probability.
+            Tap a word to see when it was spoken and how confident the transcript is.
           </p>
           <p className="flex flex-wrap gap-1" data-testid="transcript-words">
             {words.map((item, index) => (

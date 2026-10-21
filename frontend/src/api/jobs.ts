@@ -1,16 +1,7 @@
-// Typed wrappers around Phase 4 `/jobs/*` endpoints. Auth is on by default (apiFetch).
+// Typed wrapper for polling a background job. Auth is on by default (apiFetch).
 
 import { apiFetch } from "@/api/client" // typed fetch with the single-flight refresh interceptor
-import type { AsyncJobOut, DemoJobRequest } from "@/api/types" // FastAPI JSON contracts for enqueue/poll
-
-// POST /jobs/demo — throwaway echo (or fail) job so the queue is testable without ml/.
-export async function enqueueDemoJob(body: DemoJobRequest = {}): Promise<AsyncJobOut> {
-  return apiFetch<AsyncJobOut>("/jobs/demo", {
-    method: "POST", // FastAPI demo enqueue is POST
-    body, // message / sleep_ms / fail; all optional with backend defaults
-    auth: true, // owner is taken from the access JWT
-  })
-}
+import type { AsyncJobOut } from "@/api/types" // FastAPI JSON contract for a job status poll
 
 // GET /jobs/{id} — owner-only status poll; 404 for missing or someone else's job.
 export async function fetchJob(jobId: string): Promise<AsyncJobOut> {

@@ -2,7 +2,6 @@ import { BriefcaseIcon, FileTextIcon, LayoutDashboardIcon, LogOutIcon, MicIcon, 
 import { NavLink } from "react-router-dom" // highlights the active sidebar item
 
 import type { CurrentUser, UserRole } from "@/api/types" // user for footer + role to pick nav items
-import { ThemeToggle } from "@/components/layout/theme-toggle" // light/dark toggle in the footer
 import { Avatar, AvatarFallback } from "@/components/ui/avatar" // initials circle next to the email
 import {
   Sidebar,
@@ -106,7 +105,7 @@ export function AppSidebar() {
                       </NavLink>
                     </SidebarMenuButton>
                   ) : (
-                    <SidebarMenuButton disabled tooltip={`${item.title} — later phase`}>
+                    <SidebarMenuButton disabled tooltip={`${item.title} — coming soon`}>
                       <item.icon />
                       <span>{item.title}</span>
                     </SidebarMenuButton>
@@ -130,7 +129,6 @@ export function AppSidebar() {
               {user.isAdmin ? " · admin" : ""}
             </p>
           </div>
-          <ThemeToggle />
         </div>
         <SidebarMenu>
           <SidebarMenuItem>

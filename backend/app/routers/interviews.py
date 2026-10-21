@@ -1,10 +1,10 @@
-"""`/interviews/*` endpoints: candidate-only start/list, owner-only GET, text submit, audio blob.
+"""`/interviews/*` endpoints: candidate-only start/list, owner-only GET, spoken-answer audio upload.
 
 No LLM or Whisper runs inline here. `POST /interviews` inserts a scheduled session and enqueues
 `interview_generate`. `GET /interviews` lists the caller's own sessions (newest first) for the
-candidate dashboard — recruiters get 403, not a global dump. `POST .../answers/{id}` stores
-`answer_text` and enqueues `interview_evaluate`. `POST .../answers/{id}/audio` writes `audio_path`
-and enqueues `transcribe`. Transcript stays null until that worker finishes. Poll with GET /jobs/{id}.
+candidate dashboard — recruiters get 403, not a global dump. `POST .../answers/{id}` (typed text)
+is retired and returns 410. `POST .../answers/{id}/audio` writes `audio_path` and enqueues
+`transcribe`, which fills `answer_text` and enqueues `interview_evaluate`. Poll with GET /jobs/{id}.
 """
 
 import uuid  # path params for session_id / answer_id; resume_id / job_id in the start body
@@ -38,8 +38,6 @@ from app.models.job import Job  # optional posting looked up by body.job_id
 from app.models.user import User  # type of the authenticated caller
 from app.routers.jobs import get_arq_redis  # reuse the same "is the queue connected" dependency as /jobs
 from app.schemas.interviews import (  # request/response contracts
-    AnswerSubmitIn,
-    AnswerSubmitOut,
     AudioUploadOut,
     InterviewSessionListItemOut,
     InterviewSessionOut,
@@ -49,7 +47,6 @@ from app.schemas.interviews import (  # request/response contracts
 from app.services.resume_selection import resolve_parsed_resume  # same 404/409 rules as GET /matches
 from app.workers.enqueue import EnqueueFailedError, enqueue_job  # insert queued async_jobs row + Redis enqueue
 from app.workers.job_types import (  # plain string job types
-    JOB_TYPE_INTERVIEW_EVALUATE,
     JOB_TYPE_INTERVIEW_GENERATE,
     JOB_TYPE_TRANSCRIBE,
 )
@@ -188,49 +185,18 @@ async def read_interview(
     return interview
 
 
-@router.post("/{session_id}/answers/{answer_id}", response_model=AnswerSubmitOut)
-@limiter.limit("20/minute")  # each submit enqueues an evaluate job; still cheaper than start
-async def submit_answer(
-    request: Request,  # required so slowapi can key the limit on client IP
-    session_id: uuid.UUID,
-    answer_id: uuid.UUID,
-    body: AnswerSubmitIn,
-    session: AsyncSession = Depends(get_db_session),
-    redis: ArqRedis = Depends(get_arq_redis),
-    current_user: User = Depends(require_candidate),
-) -> AnswerSubmitOut:
-    """Store a text answer and enqueue evaluation. Audio is a separate POST .../audio; transcript stays NULL."""
-    interview = await session.get(InterviewSession, session_id)
-    if interview is None or interview.user_id != current_user.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
-    if interview.status in {InterviewSessionStatus.COMPLETED, InterviewSessionStatus.ABANDONED}:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="session is not accepting answers")
-    answer = await session.get(Answer, answer_id)
-    if answer is None or answer.session_id != interview.id:
-        # Missing or belonging to another session: 404, not 403, so answer ids are not enumerable.
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="answer not found")
-    if answer.answer_text is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="answer already submitted")
-    answer.answer_text = body.answer_text  # worker reads this; audio_path/transcript stay null
-    await session.commit()  # evaluate worker must see answer_text before Redis has the message
-
-    try:
-        job = await enqueue_job(
-            session,
-            redis,
-            job_type=JOB_TYPE_INTERVIEW_EVALUATE,
-            user_id=current_user.id,
-            payload={"answer_id": str(answer.id), "session_id": str(interview.id)},
-        )
-    except EnqueueFailedError as exc:
-        answer.answer_text = None  # unlock so the candidate can retry submit after a queue outage
-        await session.commit()
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="could not enqueue answer evaluation",
-        ) from exc
-
-    return AnswerSubmitOut(answer_id=answer.id, async_job_id=job.id, session_status=interview.status)
+@router.post("/{session_id}/answers/{answer_id}")
+async def submit_answer_text(
+    session_id: uuid.UUID,  # accepted so the old URL shape still routes here
+    answer_id: uuid.UUID,  # accepted so the old URL shape still routes here
+    current_user: User = Depends(require_candidate),  # 401 / 403 still apply before the 410
+) -> None:
+    """Typed answers are retired: answers are spoken. Writes nothing and always returns 410 Gone."""
+    del session_id, answer_id, current_user  # nothing is read or written
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="answers are spoken: record and upload audio",
+    )
 
 
 @router.post("/{session_id}/answers/{answer_id}/audio", response_model=AudioUploadOut)
@@ -245,20 +211,23 @@ async def upload_answer_audio(
     settings: Settings = Depends(get_settings),
     current_user: User = Depends(require_candidate),
 ) -> AudioUploadOut:
-    """Store a Chromium MediaRecorder WebM blob and enqueue `transcribe`. Does not enqueue evaluate.
+    """Store a Chromium MediaRecorder WebM blob and enqueue `transcribe` (the only way to answer).
 
-    Text submit remains the only path that queues `interview_evaluate` (the judge needs `answer_text`).
-    Retry overwrites the same file, clears transcript/metrics, and re-enqueues so they cannot stay stale.
-    Abandoned sessions 409. Completed sessions may still upload (later transcription).
+    The transcribe worker copies the transcript into `answer_text` and enqueues `interview_evaluate`.
+    A retake overwrites the same file and clears transcript/metrics/answer_text so nothing stays
+    stale. Completed or abandoned sessions and already-scored answers return 409.
     """
     interview = await session.get(InterviewSession, session_id)
     if interview is None or interview.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="session not found")
-    if interview.status == InterviewSessionStatus.ABANDONED:
+    if interview.status in {InterviewSessionStatus.COMPLETED, InterviewSessionStatus.ABANDONED}:
+        # Re-upload on a closed session would silently change a stored score, so it is refused.
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="session is not accepting answers")
     answer = await session.get(Answer, answer_id)
     if answer is None or answer.session_id != interview.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="answer not found")
+    if answer.evaluation is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="answer already scored")  # no re-takes
 
     content_type = _normalize_content_type(file.content_type)
     if content_type not in _ALLOWED_AUDIO_TYPES:
@@ -277,6 +246,7 @@ async def upload_answer_audio(
     destination.write_bytes(contents)  # overwrite on retry so a second capture replaces the first blob
     answer.audio_path = str(destination)  # worker reads this path; do not put it in JSON
     answer.transcript = None  # stale Whisper text must not survive an overwrite
+    answer.answer_text = None  # the judge input is the transcript; clear it with the old take
     answer.speech_metrics = None  # stale word timings / fluency must not survive an overwrite
     await session.commit()  # persist the path before Redis has the transcribe message
 

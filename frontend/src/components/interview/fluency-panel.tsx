@@ -13,18 +13,18 @@ import {
 // Copy when speech_metrics is null. Zeros are not shown in these states.
 function emptyCopy(state: SpeechAnalysisState): string {
   if (state === "pending") {
-    return "Fluency cards appear after transcription succeeds. No placeholder rates are shown while the job runs." // do not show 0 wpm
+    return "Fluency appears after your recording is transcribed."
   }
   if (state === "failed") {
     return "Transcription failed, so there are no fluency or prosody numbers for this answer." // worker left speech_metrics null
   }
   if (state === "stored") {
-    return "Recording stored. Fluency metrics are empty until the transcribe worker writes speech_metrics." // reload or re-upload
+    return "Recording stored. Fluency appears once transcription finishes."
   }
   if (state === "ready") {
-    return "This answer has no renderable fluency or prosody fields. Numbers are not guessed in the browser." // incomplete JSON
+    return "This answer has no fluency or voice measurements."
   }
-  return "No audio on this answer, so there are no fluency metrics. Typed answers are scored from text only." // text-only
+  return "No recording for this answer, so there are no fluency measurements."
 }
 
 // One headline metric; `value` is already formatted from an API field.
@@ -111,8 +111,7 @@ export function FluencyPanel({
       <div className="flex flex-col gap-1">
         <p className="text-sm font-medium">Communication / fluency</p>
         <p className="text-xs text-muted-foreground">
-          Both fluency arms are shown. The pipeline does not pick a winner — on sparse speech the transcript arm can
-          report 0 pauses while the acoustic arm reports several.
+          Two views of the same recording: one from the words, one from the pauses in the audio.
         </p>
       </div>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -120,14 +119,14 @@ export function FluencyPanel({
           <FluencyArm title="Transcript-derived" testId="fluency-transcript" metrics={transcriptArm} />
         ) : (
           <p className="text-sm text-muted-foreground" data-testid="fluency-transcript-empty">
-            Transcript-derived fluency is missing on this payload.
+            Word-based fluency is not available for this answer.
           </p>
         )}
         {acousticArm !== null ? (
           <FluencyArm title="Acoustic (VAD)" testId="fluency-acoustic" metrics={acousticArm} />
         ) : (
           <p className="text-sm text-muted-foreground" data-testid="fluency-acoustic-empty">
-            Acoustic fluency is missing on this payload.
+            Pause-based fluency is not available for this answer.
           </p>
         )}
       </div>
@@ -142,7 +141,7 @@ export function FluencyPanel({
           </div>
         </div>
       ) : (
-        <p className="text-sm text-muted-foreground">No prosody summary on this payload.</p>
+        <p className="text-sm text-muted-foreground">No pitch or loudness summary for this answer.</p>
       )}
     </div>
   )

@@ -1,17 +1,16 @@
-"""Weighted aggregation of four session signals into a reconstructable Score row.
+"""Weighted aggregation of four required session signals into a reconstructable Score row (`scoring_v2`).
 
-Signals (all on 0–100 before weighting):
+Signals (all on 0-100 before weighting):
 
-- resume: that session's `resumes.ats_score` (already 0–100). Omitted if null.
-- technical / behavioral: mean of `answers.evaluation.score` (0–5) for rows of that
-  `question_kind`, including follow-ups, then `scale_judge_score` (* 20). Omitted if no
-  evaluated answers of that kind.
-- communication: `mean_communication` over existing `speech_metrics`. Text-only sessions omit
-  this signal (they do not invent fluency numbers and do not store 0 as a fake measurement).
+- resume: that session's `resumes.ats_score` (already 0-100).
+- technical / behavioral: mean of `answers.evaluation.score` (0-5) for rows of that
+  `question_kind`, including follow-ups, then `scale_judge_score` (* 20).
+- communication: `mean_communication` over `speech_metrics` (both fluency arms, equal mean).
 
-Missing signals drop out; remaining configured weights renormalize to 1.0. Attribution stores
-each kept signal as `{weight, value, contribution}` plus metadata so a later weight swap can
-still explain this composite (EU AI Act Article 86 + research weight-sensitivity).
+All four are required. A missing signal raises `IncompleteSignalsError`; nothing is omitted,
+stored as null, or faked as 0, and weights are never renormalized by dropping a signal. Attribution
+stores each signal as `{weight, value, contribution}` plus metadata so a later weight swap can still
+explain this composite (EU AI Act Article 86 + research weight-sensitivity).
 """
 
 from __future__ import annotations  # AnswerSignals / AggregationResult forward refs
@@ -37,6 +36,14 @@ KIND_TECHNICAL = "technical"  # uses technical_answer_v1 rubric
 KIND_BEHAVIORAL = "behavioral"  # uses behavioral_answer_v1 rubric
 
 
+class IncompleteSignalsError(ValueError):
+    """A session cannot be scored because one or more of the four signals is unmeasured."""
+
+    def __init__(self, missing: tuple[str, ...]) -> None:
+        self.missing = missing  # signal names in ALL_SIGNALS order
+        super().__init__(f"missing signals: {', '.join(missing)}")  # short text the failed job surfaces
+
+
 @dataclass(frozen=True)
 class AnswerSignals:
     """One answers row reduced to the fields aggregation needs. No ORM, no audio bytes."""
@@ -50,12 +57,11 @@ class AnswerSignals:
 class AggregationResult:
     """Per-signal scores plus the composite and the JSON blob written to scores.attribution."""
 
-    resume_score: float | None  # ATS 0–100 or None when omitted
-    technical_score: float | None  # scaled judge mean or None
-    communication_score: float | None  # mapped fluency or None
-    behavioral_score: float | None  # scaled judge mean or None
-    composite_score: float | None  # sum of contributions; None if nothing could be weighted
-    omitted: tuple[str, ...]  # signal names dropped (missing data or non-positive weight)
+    resume_score: float  # ATS 0-100
+    technical_score: float  # scaled judge mean
+    communication_score: float  # mapped fluency
+    behavioral_score: float  # scaled judge mean
+    composite_score: float  # sum of contributions
     attribution: dict[str, Any]  # reconstructable explanation persisted on scores.attribution
 
     def column_values(self) -> dict[str, Any]:
@@ -94,22 +100,18 @@ def aggregate_session(
     ats_score: float | None,
     answers: list[AnswerSignals],
 ) -> AggregationResult:
-    """Build the four signals, drop missing ones, renormalize weights, persist attribution.
+    """Build all four signals, apply the normalized weights, and persist attribution (`scoring_v2`).
 
-    Does not call Ollama or Whisper. `ats_score` is the session resume's stored ATS; `answers`
-    are already-loaded evaluation / speech_metrics dicts. Raises ScoringConfigError if remaining
-    weights cannot renormalize (all zero / all missing).
+    Does not call Ollama or Whisper. `ats_score` is the session resume's stored ATS; `answers` are
+    already-loaded evaluation / speech_metrics dicts. Raises IncompleteSignalsError naming every
+    signal that could not be measured: no omission, no JSON null, no invented 0.
     """
-    resume_value: float | None
-    if ats_score is None:
-        resume_value = None  # parsed resume should have ATS; omit rather than invent 0
-    else:
-        resume_value = float(ats_score)  # already 0–100 from ml.resume.ats
-        if resume_value < 0.0 or resume_value > SIGNAL_SCALE:
-            resume_value = max(0.0, min(SIGNAL_SCALE, resume_value))  # belt-and-suspenders; ATS is 0–100
-    technical_value = _mean_kind_score(answers, KIND_TECHNICAL)  # None if no technical evaluations
-    behavioral_value = _mean_kind_score(answers, KIND_BEHAVIORAL)  # None if no behavioral evaluations
-    communication_value = mean_communication([item.speech_metrics for item in answers])  # None if all text-only
+    resume_value: float | None = None  # stays None only when the resume has no ATS score
+    if ats_score is not None:
+        resume_value = max(0.0, min(SIGNAL_SCALE, float(ats_score)))  # ATS is already 0-100; clamp is a safety net
+    technical_value = _mean_kind_score(answers, KIND_TECHNICAL)  # None if no technical evaluation
+    behavioral_value = _mean_kind_score(answers, KIND_BEHAVIORAL)  # None if no behavioral evaluation
+    communication_value = mean_communication([item.speech_metrics for item in answers])  # None if no scorable speech
 
     measured: dict[str, float | None] = {
         SIGNAL_RESUME: resume_value,  # ATS
@@ -117,37 +119,38 @@ def aggregate_session(
         SIGNAL_COMMUNICATION: communication_value,  # mapped dual fluency
         SIGNAL_BEHAVIORAL: behavioral_value,  # scaled judge
     }
-    present = {name for name, value in measured.items() if value is not None}  # omit missing measurements
-    applied = weights.applied(present)  # renormalize; raises if nothing left
-    omitted = tuple(name for name in ALL_SIGNALS if name not in applied)  # missing data or zero weight
+    missing = tuple(name for name in ALL_SIGNALS if measured[name] is None)  # stable ALL_SIGNALS order
+    if missing:
+        raise IncompleteSignalsError(missing)  # the caller keeps the session open and reports which are missing
 
+    applied = weights.applied()  # all four, normalized; may raise ScoringConfigError
     signals_json: dict[str, dict[str, float]] = {}  # Score-model shape: weight / value / contribution
     composite = 0.0  # running weighted sum
-    for name, weight in applied.items():
-        value = float(measured[name])  # present ⇒ not None
-        contribution = weight * value  # reconstructable: composite = sum(contribution)
+    for name in ALL_SIGNALS:
+        value = float(measured[name])  # all present by the check above
+        contribution = applied[name] * value  # reconstructable: composite = sum(contribution)
         signals_json[name] = {
-            "weight": weight,  # applied (renormalized) weight, not the raw .env number
-            "value": value,  # 0–100
+            "weight": applied[name],  # normalized weight (0.0 stays listed)
+            "value": value,  # 0-100
             "contribution": contribution,  # weight * value
         }
         composite += contribution  # arithmetic only; no learned scorer
 
+    raw_weights = weights.as_dict()  # configured numbers, e.g. 20/30/25/15
     attribution = {
-        "formula_version": FORMULA_VERSION,  # scoring_v1
+        "formula_version": FORMULA_VERSION,  # scoring_v2
         "judge_scale": "evaluation.score 0-5 * 20 -> 0-100",  # documented scale
         "communication_arm_policy": "equal_mean of fluency_transcript and fluency_acoustic",  # not a winner
-        "configured_weights": weights.as_dict(),  # raw .env numbers so a later swap can still explain this row
-        "omitted": list(omitted),  # signals dropped for this session
-        "signals": signals_json,  # the Score model comment's {weight, value, contribution} map
+        "configured_weights": raw_weights,  # raw .env numbers so a later swap can still explain this row
+        "weight_denominator": sum(raw_weights.values()),  # 90 with the defaults
+        "signals": signals_json,  # all four entries
     }
     return AggregationResult(
-        resume_score=resume_value,  # stored even when omitted from weighting (null)
-        technical_score=technical_value,  # stored even when omitted
-        communication_score=communication_value,  # null on text-only; never a fake 0
-        behavioral_score=behavioral_value,  # stored even when omitted
+        resume_score=resume_value,  # always a number in v2
+        technical_score=technical_value,  # always a number in v2
+        communication_score=communication_value,  # always a number in v2
+        behavioral_score=behavioral_value,  # always a number in v2
         composite_score=composite,  # sum of contributions
-        omitted=omitted,  # tuple for tests
         attribution=attribution,  # JSON blob
     )
 
@@ -156,6 +159,7 @@ def aggregate_session(
 __all__ = [  # public names from this module (package __init__ re-exports a wider surface)
     "AnswerSignals",  # per-answer input
     "AggregationResult",  # output written onto scores
+    "IncompleteSignalsError",  # a signal could not be measured
     "KIND_BEHAVIORAL",  # question_kind filter
     "KIND_TECHNICAL",  # question_kind filter
     "aggregate_session",  # the worker entry

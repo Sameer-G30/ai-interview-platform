@@ -8,6 +8,7 @@ import { ComparePanel } from "@/components/dashboard/compare-panel" // GET /scor
 import { RankingTable } from "@/components/dashboard/ranking-table" // stored ranking rows
 import { ScoreDistributionChart } from "@/components/dashboard/score-distribution-chart" // Recharts
 import { SkillDistributionChart } from "@/components/dashboard/skill-distribution-chart" // required_skills
+import { PageHeader } from "@/components/layout/page-header" // shared title block
 import { Button } from "@/components/ui/button" // compare action
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card" // chrome
 import { Input } from "@/components/ui/input" // email / min-composite filters
@@ -54,7 +55,7 @@ export function RecruiterCandidatesPage() {
   const compare = useMutation({
     mutationFn: (ids: string[]) => fetchScoreCompare(ids), // GET /scores/compare
     onError: (caught) => {
-      setCompareError(caught instanceof ApiError ? caught.detail : "could not compare — is the API running?")
+      setCompareError(caught instanceof ApiError ? caught.detail : "could not compare — please try again.")
     },
     onSuccess: () => {
       setCompareError(null) // clear a previous failure
@@ -89,13 +90,10 @@ export function RecruiterCandidatesPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
-      <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold">Candidates</h1>
-        <p className="text-muted-foreground">
-          Ranking and comparison read stored scores. Practice sessions (no posting) never appear here. There is no
-          recruiter interview screen.
-        </p>
-      </div>
+      <PageHeader
+        title="Candidates"
+        description="Rank and compare candidates who interviewed for your postings. Practice sessions never appear here."
+      />
       <Card>
         <CardHeader>
           <CardTitle>Posting</CardTitle>
@@ -139,7 +137,7 @@ export function RecruiterCandidatesPage() {
         <CardHeader>
           <CardTitle>Ranking</CardTitle>
           <CardDescription>
-            Sort and filter the GET /scores/rankings payload in the browser. Composites are not recomputed.
+            Sort and filter candidates for this posting. Scores are the ones stored when each interview finished.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">

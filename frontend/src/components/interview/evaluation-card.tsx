@@ -13,8 +13,7 @@ export function EvaluationCard({ evaluation }: { evaluation: unknown }) {
       <div className="flex flex-col gap-1">
         <p className="text-sm font-medium">Per-answer feedback</p>
         <p className="text-xs text-muted-foreground">
-          Judge payload from answers.evaluation. Grammar / vocabulary / relevance are not a second NLP pipeline this
-          phase — they stay in the rationale, strengths, and improvements below.
+          Scored on what we heard in your recording. Relevance, clarity, and detail are covered in the notes below.
         </p>
       </div> {/* keep score + coaching visible; do not hide this card */}
       <div className="flex items-baseline justify-between gap-2">

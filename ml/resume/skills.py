@@ -54,23 +54,28 @@ def load_skill_taxonomy(path: str | None = None) -> list[dict]:
     ]
 
 
-@lru_cache(maxsize=1)
-def _cached_taxonomy_path_and_entries() -> tuple[str, tuple[tuple[str, tuple[str, ...]], ...]]:
-    """Cache key is the resolved path so switching `ESCO_SKILLS_PATH` mid-process (tests) reloads."""
-    resolved = os.environ.get(ESCO_SKILLS_PATH_ENV_VAR) or str(_DEFAULT_SKILLS_PATH)
-    entries = load_skill_taxonomy(resolved)
-    frozen = tuple((entry["preferred_label"], tuple(entry["aliases"])) for entry in entries)
-    return resolved, frozen
-
-
 def build_phrase_matcher(nlp: Language) -> tuple[PhraseMatcher, dict[str, str]]:
+    """Return the compiled `PhraseMatcher` for this pipeline and the current taxonomy path (cached).
+
+    Compiling tokenizes every alias, which is seconds for a ~13k-skill ESCO export, so the result is
+    memoized per (pipeline object, resolved taxonomy path). Switching `ESCO_SKILLS_PATH` changes the
+    key and therefore recompiles; the same path and pipeline reuse the same matcher object.
+    """
+    resolved = os.environ.get(ESCO_SKILLS_PATH_ENV_VAR) or str(_DEFAULT_SKILLS_PATH)  # part of the cache key
+    return _compile_phrase_matcher(nlp, resolved)  # memoized below
+
+
+@lru_cache(maxsize=4)  # a handful of (nlp, path) pairs is plenty; tests swap paths occasionally
+def _compile_phrase_matcher(nlp: Language, resolved_path: str) -> tuple[PhraseMatcher, dict[str, str]]:
     """Compile a `PhraseMatcher` over every alias, keyed back to each skill's canonical label.
 
     Returns `(matcher, label_by_match_key)` where `label_by_match_key` maps the spaCy match string
     (the alias's own `nlp.vocab.strings` key, added as the match id) to the *preferred* label so
     callers can de-duplicate "Python" and "Python3" into a single "Python" result.
     """
-    _, entries = _cached_taxonomy_path_and_entries()
+    entries = tuple(  # read the taxonomy for exactly the path in the cache key
+        (entry["preferred_label"], tuple(entry["aliases"])) for entry in load_skill_taxonomy(resolved_path)
+    )
     matcher = PhraseMatcher(nlp.vocab, attr="LOWER")  # case-insensitive phrase matching
     label_by_match_key: dict[str, str] = {}
     for preferred_label, aliases in entries:

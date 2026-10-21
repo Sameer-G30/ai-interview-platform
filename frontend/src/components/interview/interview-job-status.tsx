@@ -7,38 +7,38 @@ export type InterviewJobKind = "generate" | "evaluate" | "transcribe" // generat
 function labelForStatus(kind: InterviewJobKind, status: AsyncJobStatus): string {
   if (status === "queued") {
     if (kind === "generate") {
-      return "Queued — waiting for a worker to generate questions."
+      return "Waiting to write your questions."
     }
     if (kind === "evaluate") {
-      return "Queued — waiting for a worker to score this answer."
+      return "Waiting to score this answer."
     }
-    return "Queued — waiting for a worker to transcribe this recording."
+    return "Waiting to transcribe this recording."
   }
   if (status === "running") {
     if (kind === "generate") {
-      return "Running — the judge is writing questions from your resume."
+      return "Writing questions from your resume."
     }
     if (kind === "evaluate") {
-      return "Running — the judge is scoring this answer."
+      return "Scoring this answer."
     }
-    return "Running — transcribing the recording (ffmpeg + Whisper)."
+    return "Transcribing your recording."
   }
   if (status === "succeeded") {
     if (kind === "generate") {
-      return "Succeeded — loading questions."
+      return "Questions are ready."
     }
     if (kind === "evaluate") {
-      return "Succeeded — loading the score."
+      return "Score is ready."
     }
-    return "Succeeded — loading the transcript."
+    return "Transcript is ready."
   }
   if (kind === "generate") {
-    return "Failed — question generation did not complete."
+    return "We could not write questions for this session."
   }
   if (kind === "evaluate") {
-    return "Failed — scoring did not complete. This answer cannot be re-submitted."
+    return "Scoring did not complete. Record this answer again."
   }
-  return "Failed — transcription did not complete. You can re-upload the recording."
+  return "Transcription did not complete. Record this answer again."
 }
 
 // Queued / running / failed panel driven by useJobStatus (do not poll GET /interviews while generate is queued).
@@ -56,19 +56,18 @@ export function InterviewJobStatus({
   if (pollError !== null) {
     return (
       <p className="text-sm text-destructive" role="alert">
-        Could not read job status: {pollError}
+        Could not check progress: {pollError}
       </p>
     )
   }
   if (isLoading && job === undefined) {
-    return <p className="text-sm text-muted-foreground">Checking {kind} job…</p> // first poll
+    return <p className="text-sm text-muted-foreground">Checking progress…</p>
   }
   if (job === undefined) {
-    return <p className="text-sm text-muted-foreground">Waiting for a {kind} job id.</p> // missing query param
+    return <p className="text-sm text-muted-foreground">Waiting to start.</p>
   }
   return (
     <div className="flex flex-col gap-1 text-sm">
-      <p className="font-medium capitalize">{job.status}</p>
       <p className="text-muted-foreground">{labelForStatus(kind, job.status)}</p>
       {job.status === "failed" && job.error !== null ? (
         <p className="text-destructive" role="alert">

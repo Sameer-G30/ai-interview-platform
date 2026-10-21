@@ -40,7 +40,7 @@ export function RegisterPage() {
         setApiError(error.detail) // 409 email taken, 422 validation, 429 rate limit
         return // stay on the form
       }
-      setApiError("could not register — is the API running?") // network / unexpected
+      setApiError("could not register — please try again.") // network / unexpected
     }
   }
 

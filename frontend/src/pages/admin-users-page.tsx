@@ -26,7 +26,7 @@ function UserRow({
     mutationFn: (body: { is_active?: boolean; is_admin?: boolean }) => patchAdminUser(row.id, body),
     onSuccess: onChanged,
     onError: (caught) => {
-      setError(caught instanceof ApiError ? caught.detail : "could not update — is the API running?")
+      setError(caught instanceof ApiError ? caught.detail : "could not update — please try again.")
     },
   })
 
@@ -146,7 +146,7 @@ export function AdminUsersPage() {
     usersQuery.error instanceof ApiError
       ? usersQuery.error.detail
       : usersQuery.isError
-        ? "could not load users — is the API running?"
+        ? "could not load users — please try again."
         : null
 
   async function onChanged() {
@@ -158,9 +158,8 @@ export function AdminUsersPage() {
       <CardHeader>
         <CardTitle>Users</CardTitle>
         <CardDescription>
-          Soft-disable with is_active. Access JWTs stop working immediately (`GET /auth/me` 401s). Refresh tokens are
-          not bulk-revoked; rotation already refuses inactive accounts. Registration cannot set is_admin — set that
-          flag in the database (or Grant admin here on a recruiter).
+          Deactivate an account to block sign-in immediately. New accounts cannot become admins on their own. Grant
+          admin here on a recruiter.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">

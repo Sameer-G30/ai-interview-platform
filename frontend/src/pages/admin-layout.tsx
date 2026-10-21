@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom" // tab links + nested admin pages
 
+import { PageHeader } from "@/components/layout/page-header" // shared title block
 import { useAuth } from "@/hooks/use-auth" // welcome copy; RequireAdmin already guaranteed isAdmin
 
 // One tab under /admin. href is the in-app path; end highlights only the Users index.
@@ -23,13 +24,10 @@ export function AdminLayout() {
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
-      <div className="flex flex-col gap-2">
-        <h1 className="text-2xl font-semibold">Admin</h1>
-        <p className="text-muted-foreground">
-          Signed in as {user?.email}. Admin is a flag on recruiter, not a third role. Soft-disable users and postings;
-          session and score lists are stored rows (practice included). Registration cannot set is_admin.
-        </p>
-      </div>
+      <PageHeader
+        title="Admin"
+        description={`Signed in as ${user?.email ?? ""}. Manage users and postings, and review every session and score, practice included.`}
+      />
       <nav className="flex flex-wrap gap-2" aria-label="Admin sections" data-testid="admin-tabs">
         {adminTabs.map((tab) => (
           <NavLink
@@ -37,10 +35,10 @@ export function AdminLayout() {
             to={tab.href}
             end={tab.end}
             className={({ isActive }) =>
-              `rounded-lg border px-3 py-1.5 text-sm font-medium ${
+              `rounded-full border px-4 py-1.5 text-sm font-medium transition-colors ${
                 isActive
-                  ? "border-primary/30 bg-primary/10 text-primary"
-                  : "border-border bg-background text-muted-foreground"
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border bg-card text-muted-foreground hover:bg-accent hover:text-accent-foreground"
               }`
             }
           >

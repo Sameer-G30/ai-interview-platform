@@ -16,7 +16,7 @@ function PostingRow({ posting, onChanged }: { posting: AdminPostingOut; onChange
     mutationFn: (isActive: boolean) => patchAdminPosting(posting.id, { is_active: isActive }),
     onSuccess: onChanged,
     onError: (caught) => {
-      setError(caught instanceof ApiError ? caught.detail : "could not update — is the API running?")
+      setError(caught instanceof ApiError ? caught.detail : "could not update — please try again.")
     },
   })
 
@@ -104,7 +104,7 @@ export function AdminPostingsPage() {
     postingsQuery.error instanceof ApiError
       ? postingsQuery.error.detail
       : postingsQuery.isError
-        ? "could not load postings — is the API running?"
+        ? "could not load postings — please try again."
         : null
 
   async function onChanged() {
@@ -116,8 +116,7 @@ export function AdminPostingsPage() {
       <CardHeader>
         <CardTitle>Postings</CardTitle>
         <CardDescription>
-          Cross-recruiter list. Deactivate with is_active — there is no hard delete. This is not async job status
-          (`GET /jobs/:id`).
+          Every recruiter's postings. Deactivate a posting to hide it from candidates. Postings are not deleted.
         </CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">

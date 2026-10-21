@@ -3,6 +3,24 @@ import tailwindcss from "@tailwindcss/vite" // Tailwind v4's first-party Vite pl
 import react from "@vitejs/plugin-react" // enables JSX/Fast Refresh for .tsx files
 import { defineConfig } from "vitest/config" // Vite config plus the single Vitest runner (no second test tool)
 
+// Every backend route prefix the SPA calls same-origin (no CORS, no WSL localhost traps).
+const API_PREFIXES = [
+  "/auth", "/health", "/jobs", "/resumes", "/postings", "/matches",
+  "/interviews", "/scores", "/reports", "/admin",
+] // 10 prefixes; the plan's "11" counted /admin twice in prose
+const baseProxy = {
+  target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // this machine's uvicorn --port 8001
+  changeOrigin: true, // set Host to the API so FastAPI sees a normal request
+}
+const adminProxy = {
+  ...baseProxy,
+  bypass(req: { headers: { accept?: string } }) {
+    // Browser document navigations to the SPA route /admin must not be stolen by the API proxy.
+    // apiFetch sets Accept: application/json, so GET /admin/users still reaches FastAPI.
+    if (req.headers.accept?.includes("text/html")) return "/index.html" // Vite serves the SPA
+  },
+}
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()], // react() handles JSX; tailwindcss() compiles Tailwind classes at build/dev time
@@ -16,56 +34,10 @@ export default defineConfig({
     host: "localhost", // printed URL matches FRONTEND_ORIGIN=http://localhost:5174
     port: 5174, // this project's Vite port (Secure Chat uses 5173)
     strictPort: true, // fail instead of silently opening 5175 when 5174 is busy
-    proxy: {
-      // Same-origin /auth and /health so the browser never cross-origin fetches (CORS / WSL localhost traps).
-      "/auth": {
-        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // this machine's uvicorn --port 8001
-        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
-      },
-      "/health": {
-        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // same target as /auth
-        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
-      },
-      "/jobs": {
-        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // same target as /auth
-        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
-      },
-      "/resumes": {
-        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // same target as /auth so POST /resumes stays same-origin
-        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
-      },
-      "/postings": {
-        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // same target as /auth so /postings stays same-origin
-        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
-      },
-      "/matches": {
-        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // same target as /auth so /matches stays same-origin
-        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
-      },
-      "/interviews": {
-        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // same target as /auth so /interviews stays same-origin
-        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
-      },
-      "/scores": {
-        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // Phase 13 GET /scores/{id} + rankings/compare
-        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
-      },
-      "/reports": {
-        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // Phase 13 WeasyPrint PDF download
-        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
-      },
-      "/admin": {
-        target: process.env.AIIP_API_PROXY ?? "http://127.0.0.1:8001", // Phase 15 require_admin user/posting/session/score ops
-        changeOrigin: true, // set Host to the API so FastAPI sees a normal request
-        bypass(req) {
-          // Browser document navigations to the SPA route /admin must not be stolen by the API proxy.
-          // apiFetch sets Accept: application/json, so GET /admin/users still reaches FastAPI.
-          if (req.headers.accept?.includes("text/html")) {
-            return "/index.html" // let Vite serve the SPA; React Router owns /admin
-          }
-        },
-      },
-    },
+    proxy: Object.fromEntries(
+      // One entry per API prefix; /admin additionally needs the HTML bypass below.
+      API_PREFIXES.map((prefix) => [prefix, prefix === "/admin" ? adminProxy : baseProxy]),
+    ),
   },
   // Node-level smoke tests. They render the real route tree in jsdom; they do not open a browser.
   test: {

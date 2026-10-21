@@ -3,15 +3,15 @@ import type { AsyncJobOut, AsyncJobStatus } from "@/api/types" // GET /jobs/{id}
 // Maps a job status to a short candidate-facing sentence.
 function labelForStatus(status: AsyncJobStatus): string {
   if (status === "queued") {
-    return "Queued — waiting for a worker." // Redis has the job; ARQ has not started it
+    return "Waiting to start reading your resume."
   }
   if (status === "running") {
-    return "Running — extracting text, skills, and ATS score." // worker is inside resume_parse
+    return "Reading your resume and matching skills."
   }
   if (status === "succeeded") {
-    return "Succeeded — loading parsed results." // parent will GET /resumes/{id}
+    return "Done. Loading your results."
   }
-  return "Failed — parsing did not complete." // terminal error; details come from job.error
+  return "We could not read this resume."
 }
 
 // Queued / running / failed panel driven by useJobStatus (do not poll GET /resumes here).
@@ -27,19 +27,18 @@ export function ParseStatus({
   if (pollError !== null) {
     return (
       <p className="text-sm text-destructive" role="alert">
-        Could not read job status: {pollError}
+        Could not check progress: {pollError}
       </p>
     )
   }
   if (isLoading && job === undefined) {
-    return <p className="text-sm text-muted-foreground">Checking parse job…</p> // first poll
+    return <p className="text-sm text-muted-foreground">Checking progress…</p>
   }
   if (job === undefined) {
-    return <p className="text-sm text-muted-foreground">Waiting for a parse job id.</p> // missing ?job=
+    return <p className="text-sm text-muted-foreground">Waiting to start.</p>
   }
   return (
     <div className="flex flex-col gap-1 text-sm">
-      <p className="font-medium capitalize">{job.status}</p>
       <p className="text-muted-foreground">{labelForStatus(job.status)}</p>
       {job.status === "failed" && job.error !== null ? (
         <p className="text-destructive" role="alert">
