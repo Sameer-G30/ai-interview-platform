@@ -9,7 +9,9 @@ on:
 
 jobs:
   lint-and-test:
-    runs-on: ubuntu-latest    # GitHub-hosted Linux runner, closest match to the WSL2 dev environment
+    # ubuntu-latest is 26.04 and actions/setup-python has no CPython 3.11.9 for it.
+    # 24.04 still publishes that exact patch, which matches the pyenv pin.
+    runs-on: ubuntu-24.04
 
     # Spin up real Postgres+pgvector and Redis for the job, matching docker-compose.yml,
     # so DB-dependent tests added in later phases run here without a workflow rewrite.
@@ -75,7 +77,7 @@ jobs:
         run: uv run pytest -q              # fails the job on any failing/erroring test
 
   frontend-lint-and-build:
-    runs-on: ubuntu-latest    # same Linux runner as the backend job; no DB services needed
+    runs-on: ubuntu-24.04    # same image as the backend job so both stay on a runner that has our toolchain
     defaults:
       run:
         working-directory: frontend  # every `run` step below executes inside frontend/
